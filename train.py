@@ -371,6 +371,13 @@ blob += (b"bootgpt-cpp: bare-metal neural network dreaming C++20"
          b"\r\nno os involved - press any key to reboot\r\n\r\n\x00")
 BYE_ADDR = 0x8000 + len(blob)
 blob += b"\r\n// build interrupted - rebooting...\r\n\x00"
+
+# The syntax highlighter is position-independent code loaded with the model.
+# Keeping it here leaves the MBR's scarce 510 bytes available for inference.
+blob += b"\x00" * (-len(blob) % 16)
+SYNTAX_ADDR = 0x8000 + len(blob)
+with open("syntax.bin", "rb") as syntax_file:
+    blob += syntax_file.read()
 assert 0x8000 + len(blob) < 0x10000, "DS=0 16-bit address overflow"
 
 SECTORS = (len(blob) + 511) // 512
@@ -399,7 +406,8 @@ with open("params.inc", "w") as f:
             f"SECTORS  equ {SECTORS}\n"
             f"SEEDADDR equ {SEED_ADDR:#x}\n"
             f"HDRADDR  equ {HDR_ADDR:#x}\n"
-            f"BYEADDR  equ {BYE_ADDR:#x}\n")
+            f"BYEADDR  equ {BYE_ADDR:#x}\n"
+            f"SYNTAXADDR equ {SYNTAX_ADDR:#x}\n")
 
 json.dump({
     "V": V, "C": C, "E": E, "H": H,

@@ -2,9 +2,10 @@
 
 A neural network that boots your PC and dreams C++20.
 
-The MBR is 512 bytes of hand-written 16-bit x86 assembly (`445` bytes of code
+The MBR is 512 bytes of hand-written 16-bit x86 assembly (`460` bytes of code
 before zero padding + `0xAA55`). It loads a `28.5 KB` `int8`/`int16` language
-model from the next 57 sectors (`CHS 0/0/2`) and runs character-level inference
+model and a position-independent syntax highlighter from the next 60 sectors
+(`CHS 0/0/2`) and runs character-level inference
 in 16-bit real mode on a 386+. No OS, no C runtime, no allocator. The machine
 wakes up and streams indented, warning-free C++20 systems code: `#include`
 headers, namespaces, `constexpr` constants, `enum class`, templates, structs,
@@ -66,7 +67,7 @@ python3 -m venv .venv && .venv/bin/pip install numpy
 ./run.sh
 ```
 
-`disk.img` (`29,696` bytes) is a standard raw BIOS boot image. `dd` it to a USB
+`disk.img` (`31,232` bytes) is a standard raw BIOS boot image. `dd` it to a USB
 stick or attach it as `-drive format=raw,file=disk.img,if=ide` in QEMU / Bochs /
 v86 — any keypress interrupts generation and reboots via `int 19h` with a fresh
 timer-seeded LCG state.
@@ -83,10 +84,14 @@ timer-seeded LCG state.
   Estimator on the exact `int8`/`int16` grid + integer softclip), emits
   `weights.bin` and `params.inc`, and verifies exact integer parity via `BootSim`.
 - **`boot.asm`** is the entire bare-metal runtime inside the 510-byte MBR code
-  budget: `int 13h` to load weights into `0x0800:0000`, `int 10h` teletype
+  budget: `int 13h` to load weights into `0x0800:0000`, `int 10h` colored
   output, integer softclip `trunc(64*p / (4096 + |p|))` via `cdq`/`idiv`, and
   exact Min-P logit-margin gating (`L[v] >= L_max - MARGIN`) with PIT-seeded
   16-bit LCG noise (`int 1Ah`).
+- **`syntax.asm`** is a position-independent streaming C++ highlighter loaded
+  alongside the model. It maps the GitHub-inspired palette to standard VGA
+  attributes: gray text, light-red keywords, magenta functions, cyan constants
+  and strings, yellow built-ins, dark-gray comments, and green entities on black.
 - **`record.py`** records `bootgpt_demo.mp4` and `bootgpt_demo.gif` from
   headless QEMU via the monitor socket.
 

@@ -5,6 +5,7 @@ weights.bin
 params.inc
 params.json
 boot.bin
+syntax.bin
 boot.dbg.bin
 boot.lst
 boot.dbg.lst
