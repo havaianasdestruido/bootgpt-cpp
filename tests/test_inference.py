@@ -1,6 +1,8 @@
 """Check reference arithmetic against the bundled real-mode inference code."""
 import importlib.util
 from pathlib import Path
+
+from sampling import sample
 import re
 import shutil
 import subprocess
@@ -43,6 +45,16 @@ class InferenceTests(unittest.TestCase):
                          if re.search(r'^\s*\d+\s+([0-9A-F]{8})\s+', line))
             cls.mainloop = 0x7c00 + int(entry.group(1), 16)
 
+    def test_float_checkpoint_layout_and_vocabulary(self):
+        m = self.model
+        with np.load(ROOT / 'model/model.npz') as data:
+            self.assertEqual(str(data['vocab']), m.vocab)
+            self.assertEqual(data['emb'].shape, (m.p['V'], m.p['E']))
+            self.assertEqual(data['W1'].shape, (m.p['H'], m.p['C'] * m.p['E']))
+            self.assertEqual(data['W2'].shape, (m.p['V'], m.p['H']))
+            self.assertEqual(data['b1'].shape, (m.p['H'],))
+            self.assertEqual(data['b2'].shape, (m.p['V'],))
+
     def test_full_boot_loop_updates_context(self):
         m = self.model
         cpu = unicorn.Uc(unicorn.UC_ARCH_X86, unicorn.UC_MODE_16)
@@ -75,10 +87,8 @@ class InferenceTests(unittest.TestCase):
             if steps == 270:
                 uc.emu_stop()
                 return
-            token = m.generate(ctx, rnd, 1)
-            ctx = ctx[1:] + [m.vocab.index(token)]
-            for _ in range(m.p['V']):
-                rnd = (rnd * 25173 + 13849) & 0xffff
+            chosen, rnd = sample(m.forward(ctx)[2], rnd)
+            ctx = ctx[1:] + [chosen]
             steps += 1
 
         cpu.hook_add(unicorn.UC_HOOK_INTR, interrupt)

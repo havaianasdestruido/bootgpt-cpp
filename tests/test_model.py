@@ -22,13 +22,17 @@ class ModelArtifactTests(unittest.TestCase):
         for name, value in (("VOCAB", vocab), ("CTX", ctx), ("EMBDIM", emb),
                             ("HID", hidden), ("SECTORS", params["SECTORS"])):
             self.assertEqual(inc[name], value)
-        for name in ("A1SHIFT", "A2SHIFT", "MARGIN", "NOISE"):
+        for name in ("A1SHIFT", "A2SHIFT"):
             self.assertEqual(inc[name], params[name])
+        ee, ew1, ew2 = params["scales"]
+        self.assertEqual(params["A1SHIFT"], ee + ew1 - 12)
+        self.assertEqual(params["A2SHIFT"], 6 + ew2 - 8)
         self.assertEqual(inc["W1_OFF"], vocab * (1 + emb))
         self.assertEqual(inc["W2_OFF"], inc["W1_OFF"] + hidden * ctx * emb)
         self.assertEqual(inc["B1_OFF"], inc["W2_OFF"] + vocab * hidden)
         self.assertEqual(inc["B2_OFF"], inc["B1_OFF"] + 2 * hidden)
         self.assertEqual(inc["SEEDADDR"], 0x8000 + inc["B2_OFF"] + 2 * vocab)
+        self.assertEqual(params["SAMPLER"], "epsilon-soft-q14")
         weights = (MODEL / "weights.bin").read_bytes()
         self.assertEqual(len(weights), params["SECTORS"] * 512)
         self.assertEqual(len(set(weights[:vocab])), vocab)

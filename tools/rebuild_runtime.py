@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reassemble the runtime around the already-trained, committed model.
+"""Reassemble the boot/runtime extension around the already-trained, committed model.
 
 This is not retraining: it preserves the complete weights/seed/strings prefix,
 all generated constants and the existing sector count. It refuses to grow the
@@ -33,13 +33,13 @@ def main():
     if len(boot_data) != 512 or boot_data[-2:] != b'\x55\xaa':
         raise ValueError('invalid boot sector')
     if offset + len(code) > size:
-        raise ValueError('highlighter exceeds existing sector budget; retrain/rebuild')
+        raise ValueError('runtime extension exceeds existing sector budget; retrain/rebuild')
     weights = weights[:offset] + code + bytes(size - offset - len(code))
     (MODEL / 'weights.bin').write_bytes(weights)
     (MODEL / 'boot.bin').write_bytes(boot_data)
     (MODEL / 'disk.img').write_bytes(boot_data + weights)
     print(f'boot: {len(boot_data)} bytes; weights: {len(weights)} bytes; '
-          f'highlighter: {len(code)} bytes at {offset:#x}')
+          f'extension: {len(code)} bytes at {offset:#x}')
 
 
 if __name__ == '__main__':

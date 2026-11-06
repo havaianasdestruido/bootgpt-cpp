@@ -8,10 +8,15 @@ import argparse
 import json
 from pathlib import Path
 import re
+import sys
+import subprocess
+import shutil
 
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from sampling import sample
 
 
 class Model:
@@ -51,22 +56,26 @@ class Model:
         l = (l >> shift if shift >= 0 else l << -shift) + self.b2
         return a, h, l
 
-    def generate(self, ctx, seed, count, trace=False):
+    def generate(self, ctx, seed, count, trace=False, legacy=False):
         p = self.p
         ctx = list(ctx)
         rnd = seed & 0xffff
         result = []
         for position in range(count):
             a, h, logits = self.forward(ctx)
-            threshold = int(logits.max()) - p['MARGIN']
-            best, chosen = -(1 << 31), 0
-            for i, logit in enumerate(logits):
-                rnd = (rnd * 25173 + 13849) & 0xffff
-                r = rnd >> 8
-                r = r - 256 if r >= 128 else r
-                candidate = int(logit) + r * p['NOISE']
-                if logit >= threshold and candidate > best:
-                    best, chosen = candidate, i
+            if legacy:
+                # Original decoder, retained solely for before/after analysis.
+                threshold = int(logits.max()) - 240
+                best, chosen = -(1 << 31), 0
+                for i, logit in enumerate(logits):
+                    rnd = (rnd * 25173 + 13849) & 0xffff
+                    r = rnd >> 8
+                    r = r - 256 if r >= 128 else r
+                    candidate = int(logit) + r * 6
+                    if logit >= threshold and candidate > best:
+                        best, chosen = candidate, i
+            else:
+                chosen, rnd = sample(logits, rnd)
             if trace:
                 print(json.dumps({'position': position, 'context_ids': ctx,
                                   'token_id': chosen, 'token': self.vocab[chosen],
@@ -92,18 +101,41 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--tokens', type=int, default=1500)
     parser.add_argument('--trace', action='store_true', help='emit per-token JSON')
+    parser.add_argument('--legacy', action='store_true', help='use original Min-P sampler')
+    parser.add_argument('--corpus-file', type=Path, help='measure initial non-whitespace 6-gram corpus matches')
+    parser.add_argument('--syntax-check', action='store_true', help='compile function-prompt completions with g++')
     args = parser.parse_args()
     model = Model()
     cases = [
-        ('boot-seed-loop', model.p['seed_ctx'], 0x1235),
-        ('short-completion', model.context('int add(int a, int b) { return '), 1),
-        ('multiline-function', model.context('int sum(int n) {\n    int s = 0;\n'), 2),
-        ('long-generation', model.p['seed_ctx'], 0xcaff),
-        ('balanced-delimiters', model.context('int f(int x) {\n    if (x > 0) {\n'), 3),
+        ('boot-seed-loop', model.p['seed_ctx'], 0x1235, None),
+        ('short-completion', model.context('int add(int a, int b) { return '), 1,
+         'int add(int a, int b) { return '),
+        ('multiline-function', model.context('int sum(int n) {\n    int s = 0;\n'), 2,
+         'int sum(int n) {\n    int s = 0;\n'),
+        ('long-generation', model.p['seed_ctx'], 0xcaff, None),
+        ('balanced-delimiters', model.context('int f(int x) {\n    if (x > 0) {\n'), 3,
+         'int f(int x) {\n    if (x > 0) {\n'),
     ]
-    for name, context, seed in cases:
-        text = model.generate(context, seed, args.tokens, args.trace)
-        print(json.dumps({'case': name, 'seed': seed, **metrics(text), 'output': text}))
+    corpus = args.corpus_file.read_text() if args.corpus_file else None
+    if args.syntax_check and not shutil.which('g++'):
+        parser.error('--syntax-check requires g++')
+    for name, context, seed, prompt in cases:
+        text = model.generate(context, seed, args.tokens, args.trace, args.legacy)
+        record = {'case': name, 'seed': seed, 'decoder': 'legacy' if args.legacy else 'epsilon-soft',
+                  **metrics(text), 'output': text}
+        if corpus is not None:
+            window = text[:300]
+            grams = [window[i:i + 6] for i in range(max(0, len(window) - 5))
+                     if window[i:i + 6].strip()]
+            record['initial_nonblank_6gram_match_fraction'] = (
+                round(sum(g in corpus for g in grams) / len(grams), 4) if grams else None)
+            record['initial_nonblank_6gram_count'] = len(grams)
+        if args.syntax_check and prompt is not None:
+            result = subprocess.run(['g++', '-std=c++20', '-x', 'c++', '-fsyntax-only', '-'],
+                                    input=prompt + text, text=True, capture_output=True)
+            record['syntax_ok'] = result.returncode == 0
+            record['syntax_diagnostic'] = result.stderr.splitlines()[:2]
+        print(json.dumps(record))
 
 
 if __name__ == '__main__':

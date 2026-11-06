@@ -10,8 +10,9 @@
 ;   +B2_OFF  b2[VOCAB]            int16 Q8
 ;   +...     seedctx[CTX], hdr, byemsg (addressed via DS=0 at 0x8000+off)
 ; Runtime (DS=0, SS=0):
-;   ctx 0x7600[32], y 0x7700[100], logits 0x7800[176], xin 0x7A00[192],
-;   rnd 0x7B80, bootdrv 0x7B82, dbgctr 0x7B84, lexer 0x7B86..0x7BAF
+;   ctx 0x7600[CTX], y 0x7700[HID], logits 0x7800[VOCAB*2], xin 0x7A00[CTX*EMBDIM],
+;   sample weights 0x7200[512], rnd 0x7B80, bootdrv 0x7B82,
+;   dbgctr 0x7B84, lexer and sampler state 0x7B86..0x7BAF
 
 [org 0x7C00]
 [cpu 386]
@@ -205,7 +206,7 @@ infer:
         jb .jl
 
         ; logits: L[v] = (Sigma y*W2[v]) [<</>>]A2SHIFT + b2[v]  (Q8, int16)
-        ; track dx = max_v L[v] for Min-P logit-margin gating
+        ; track dx = max_v L[v] for epsilon-soft sampling
         mov dx, 0x8000
         mov di, W2_OFF
         xor bp, bp
@@ -239,36 +240,9 @@ infer:
         cmp bp, VOCAB
         jb .vl
 
-        ; Min-P sample: among v with L[v] >= L_max - MARGIN,
-        ; argmax( L[v] + int8(rnd>>8)*NOISE ), first index wins ties
-        movsx esi, dx
-        sub esi, MARGIN
-        mov edi, 0x80000000
-        xor bx, bx
-        xor bp, bp
-.sl:
-        mov ax, [RND]
-        imul ax, ax, 25173
-        add ax, 13849
-        mov [RND], ax
-        movsx ecx, word [LOGBUF+bp]
-        cmp ecx, esi
-        jl .nx
-        mov al, ah
-        cbw
-        imul ax, ax, NOISE
-        movsx edx, ax
-        add ecx, edx
-        cmp ecx, edi
-        jle .nx
-        mov edi, ecx
-        mov bx, bp
-.nx:
-        add bp, 2
-        cmp bp, VOCAB*2
-        jb .sl
-        shr bx, 1
-        ret                     ; bx = argmax index (bh=0)
+        ; Sample using the position-independent extension loaded with the model.
+        call SYNTAXADDR+2
+        ret
 
 ; ---------------- bios helpers ----------------
 putc:                           ; AL = char; colored second-stage BIOS output

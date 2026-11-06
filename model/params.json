@@ -5,8 +5,7 @@
   "H": 100,
   "A1SHIFT": -4,
   "A2SHIFT": 3,
-  "MARGIN": 240,
-  "NOISE": 6,
+  "SAMPLER": "epsilon-soft-q14",
   "SECTORS": 62,
   "scales": [
     4,

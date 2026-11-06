@@ -9,6 +9,8 @@ from pathlib import Path
 
 import numpy as np
 
+from sampling import sample
+
 MODEL_DIR = Path("model")
 MODEL_DIR.mkdir(exist_ok=True)
 
@@ -43,8 +45,9 @@ _header = (b"bootgpt-cpp: bare-metal neural network dreaming C++20"
            b"\r\nno os involved - press any key to reboot\r\n\r\n\x00")
 _bye = b"\r\n// build interrupted - rebooting...\r\n\x00"
 _syntax_size = (MODEL_DIR / "syntax.bin").stat().st_size
-_blob_size = (V + V * E + H * C * E + V * H + 2 * H + 2 * V + C
-              + len(_header) + len(_bye) + 15 + _syntax_size)
+_prefix_size = (V + V * E + H * C * E + V * H + 2 * H + 2 * V + C
+                + len(_header) + len(_bye))
+_blob_size = _prefix_size + (-_prefix_size % 16) + _syntax_size
 assert _blob_size <= 62 * 512 and 0x8000 + _blob_size < 0x10000, \
     f"vocabulary of {V} characters exceeds the boot weight budget"
 assert "\n" in vocab and " " in vocab
@@ -290,14 +293,8 @@ tvec = np.vectorize(trunc_div)
 class BootSim:
     """Mirrors boot.asm arithmetic instruction-for-instruction."""
 
-    def __init__(self, noise_scale, margin=384, seed=0x1234):
-        self.NS = noise_scale
-        self.MARGIN = margin
-        self.rnd = (seed & 0xFFFF) or 1
-
-    def lcg(self):
-        self.rnd = (self.rnd * 25173 + 13849) & 0xFFFF
-        return self.rnd
+    def __init__(self, seed=0x1234):
+        self.rnd = seed & 0xFFFF
 
     def preacts_and_logits(self, ctx):
         xin = np.array([emb_f[ctx[k] * E + r]
@@ -317,23 +314,8 @@ class BootSim:
         return self.preacts_and_logits(ctx)[2]
 
     def step_token(self, ctx):
-        logits = self.logits_for(ctx)
-        lmax = int(logits.max())
-        thresh = lmax - self.MARGIN
-        best = -(1 << 31)
-        bi = 0
-        for vi in range(V):
-            rnd = self.lcg()
-            lv = int(logits[vi])
-            if lv < thresh:
-                continue
-            r8 = (rnd >> 8) & 0xFF
-            if r8 >= 128:
-                r8 -= 256
-            cand = lv + r8 * self.NS
-            if cand > best:
-                best, bi = cand, vi
-        return bi
+        token, self.rnd = sample(self.logits_for(ctx), self.rnd)
+        return token
 
     def gen(self, n, ctx0):
         ctx = list(ctx0)
@@ -345,11 +327,8 @@ class BootSim:
         return "".join(out)
 
 
-NOISE_CHOICE = 6
-MARGIN_CHOICE = 240   # 0.94 logit units in Q8 (Min-P ~= exp(-0.94) ~= 0.39)
-
 # Overflow guard: preacts*64 must fit int32 and logits must fit int16 (Q8)
-_probe = BootSim(NOISE_CHOICE, MARGIN_CHOICE, seed=0x1234)
+_probe = BootSim(seed=0x1234)
 _pmax, _lmax = 0, 0
 _ctx = list(seed_ctx)
 for _ in range(800):
@@ -362,11 +341,11 @@ print(f"max |logit| on sample walk: {_lmax} (int16 limit 32767)")
 assert _pmax < 10_000_000, _pmax
 assert _lmax < 30_000, _lmax
 
-print("\n--- INTEGER (asm-identical) Min-P samples across seeds ---")
+print("\n--- INTEGER (asm-identical) epsilon-soft samples across seeds ---")
 for sd in [0x1234, 0xBEEF, 0xCAFE]:
-    s = BootSim(NOISE_CHOICE, MARGIN_CHOICE, seed=sd)
+    s = BootSim(seed=sd)
     txt = s.gen(900, seed_ctx)
-    print(f"\n[seed={sd:#06x}, MARGIN={MARGIN_CHOICE}, NOISE={NOISE_CHOICE}]")
+    print(f"\n[seed={sd:#06x}, epsilon-soft Q14]")
     print(txt)
 
 # ---------------- emit artifacts ----------------
@@ -418,8 +397,6 @@ with (MODEL_DIR / "params.inc").open("w") as f:
             f"B2_OFF   equ {b2off}\n"
             f"A1SHIFT  equ {A1SHIFT}\n"
             f"A2SHIFT  equ {A2SHIFT}\n"
-            f"MARGIN   equ {MARGIN_CHOICE}\n"
-            f"NOISE    equ {NOISE_CHOICE}\n"
             f"SECTORS  equ {SECTORS}\n"
             f"SEEDADDR equ {SEED_ADDR:#x}\n"
             f"HDRADDR  equ {HDR_ADDR:#x}\n"
@@ -430,7 +407,7 @@ with (MODEL_DIR / "params.json").open("w") as f:
     json.dump({
         "V": V, "C": C, "E": E, "H": H,
         "A1SHIFT": A1SHIFT, "A2SHIFT": A2SHIFT,
-        "MARGIN": MARGIN_CHOICE, "NOISE": NOISE_CHOICE,
+        "SAMPLER": "epsilon-soft-q14",
         "SECTORS": SECTORS,
         "scales": [ee, ew1, ew2],
         "seed_ctx": seed_ctx,

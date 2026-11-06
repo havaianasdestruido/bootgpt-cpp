@@ -1,82 +1,107 @@
-# Generation investigation (incomplete)
+# Generation investigation and validation
 
-The long-running repetition problem is **not yet fixed**. Do not interpret the
-highlighter correction as a generation-quality fix. The model is a 32-character
-MLP, with position-specific first-layer weights, not a transformer; it has no
-attention cache, positional embedding table, EOS token, or prompt interface in
-the boot image. It generates until a keypress. The character vocabulary is
-stored at the start of `weights.bin` and the seed is in that same blob.
+The included character MLP uses 32 context characters and position-specific
+first-layer weights. It is not a transformer: there is no attention mask, cache,
+or positional embedding table. The boot image has no prompt interface or EOS;
+it generates until a keypress. Vocabulary and seed are in `weights.bin`.
 
-## Reproduce the absorbing state
+## Root cause and correction
 
-Install NumPy and run `python3 tools/evaluate_generation.py`. Add `--trace` for
-JSON records with context and chosen token IDs, position, and integer logits and
-hidden/preactivation ranges. The tool reads the bundled final integer weights;
-it is not a substitute for booting the image. Its extra prompts are reference
-experiments, left-padded with spaces and truncated to the most recent 32
-characters, not an interface provided by the BIOS image.
+With the original weights and sampler, 32 spaces yield a space logit of 1840
+and a runner-up of 607. The 240-point Min-P cutoff admits **only** space; once
+32 spaces have been generated, the context is identical forever and the sampler
+cannot exit. The corpus contains 389 space runs of at least 32; among the 3,807
+next-character targets following 32 spaces, 3,418 are spaces (89.8%). Thus the
+model's strong space preference reflects the finite-context training data, not
+an incorrectly shifted context. Its Q8 logits imply 91.5% space under softmax;
+the pre-QAT float checkpoint also strongly prefers space. It is a different
+checkpoint, not a dequantized copy of the final QAT model.
 
-For the original model and this branch, the same weights and decoding settings
-produce these 1,500-character simulations. Repeated 4-gram fraction is
-`1 - (unique 4-grams / all 4-grams)`; spaces count as characters. Exact seed,
-prompts, and settings are in the script.
+The sampler now uses the original Min-P/noise behavior on three quarters of
+branch draws and approximate categorical softmax on one quarter. This keeps much
+of the original output style while allowing alternatives the cutoff excluded.
+Separate LCG updates are used for branch selection and sampling; they are
+deterministic and not statistically independent. No repetition penalty,
+context-specific rule, or output truncation is used. The position-independent
+sampler is in the loaded runtime extension alongside the highlighter. The
+softmax branch uses a 16-entry Q14 lookup for fractional powers of two and
+integer multiply-high sampling. It approximates temperature-one softmax; very
+small weights can still quantize to zero. The combined distribution is a
+mixture, **not** exact softmax. The exact sector budget is now full.
 
-| Case | Seed (hex) | Repeated 4-gram fraction | Longest space run | Newlines |
-|---|---:|---:|---:|---:|
-| boot-seed-loop | 1235 | 0.9045 | 1282 | 10 |
-| short-completion | 0001 | 0.7956 | 1009 | 35 |
-| multiline-function | 0002 | 0.9586 | 1426 | 3 |
-| long-generation | caff | 0.9078 | 1325 | 8 |
-| balanced-delimiters | 0003 | 0.9993 | 1500 | 0 |
+For this model's all-space context, an exhaustive test of all 65,536 possible
+RNG states finds no all-space cycle; the longest continuous all-space trajectory
+before a non-space is selected is 225 draws. This does not prove the absence of
+all other loops. The highlighter was also corrected: identifiers longer than
+31 characters were silently truncated in the displayed stream. It now flushes
+the prefix and streams the rest.
 
-The 0x1235 case first enters the final run at output index 218 (zero-based).
-After 32 spaces the context is all spaces: the space logit is 1840, and the
-next highest logit is 607. The Min-P margin is 240, so space is the **only**
-allowed token; the context stays all spaces forever. This is a consequence of
-both the model's predictions and the hard cutoff. The context cannot distinguish
-32 from 33 or more consecutive spaces. The training corpus does contain long
-space runs (389 of at least 32), so those contexts are not literally absent.
-The pre-QAT float checkpoint also favors space there (7.222 versus 2.636 for
-its runner-up). It is a different checkpoint, not the float version of the
-final QAT weights; a numerical equality comparison would be misleading.
+## Reproduce the comparison
 
-Removing or substantially widening the cutoff did not establish a safe fix:
-with margin 1280 the 0xcafe sample no longer begins with coherent includes and
-contains visibly more garbled code. A lower 4-gram repetition score alone does
-not establish improved C++ quality. A correct solution still requires a
-validated decoding/training approach that can escape the absorbing state while
-maintaining output quality. Small context and imperfect training also limit C++
-syntax and long-range consistency. Model output is not guaranteed to compile.
+With NumPy installed and the corpus sources downloaded (see the main README):
 
-## Separately fixed: display loses long identifiers
+```sh
+python3 corpus_gen.py
+python3 tools/evaluate_generation.py --legacy --corpus-file corpus.txt --syntax-check > before.jsonl
+python3 tools/evaluate_generation.py          --corpus-file corpus.txt --syntax-check > after.jsonl
+```
 
-`syntax.asm` formerly stopped accepting identifier bytes after its 31-byte
-buffer filled, silently discarding all later characters until a delimiter.
-This produced a displayed stream that did not match generated tokens. It now
-flushes the prefix and streams the remainder with the same color. The change
-does not change model predictions, which is why the table is identical before
-and after. `tests/test_highlighter.py` executes the assembled highlighter under
-Unicorn, including identifiers on both sides of the boundary. On the original,
-`struct ` + 40 `A`s + `_9;` displayed only 31 `A`s before the semicolon.
+Use `--trace` for JSON lines with each context's IDs, selected token ID,
+position, logits, and intermediate ranges. The simulator reads the committed
+integer weights. Extra prompts are reference experiments left-padded with spaces
+and truncated to 32 characters; they are not an interface offered by the image.
+The decoder is the variable being compared; weights, contexts, seeds and lengths
+are held constant. Legacy decoding uses the original margin and noise values.
 
-`tests/test_inference.py` executes the real boot-sector instructions under
-Unicorn with BIOS interrupts stubbed. For four contexts and three seeds, hidden
-activations, logits, and token selection match the independent integer
-reference exactly; a separate 270-token full boot-loop test checks the context
-and RNG on each iteration. The latter crosses the all-space failure point for the boot seed and
-PIT value 0xcafe (the normal boot code forces it odd, to 0xcaff).
-This is not exhaustive proof of inference correctness
-or a hardware/BIOS test. During investigation the image was also booted in
-headless QEMU's x86_64 system emulator with an IDE raw disk and VGA output was
-observed. The exact `qemu-system-i386` command remains untested here because
-that binary was unavailable.
+For 1,500 generated characters per case, the following are repeated 4-gram
+fraction (`1 - unique / total`) and longest consecutive space run:
 
-Full pre-QAT training and QAT were not rerun. There is no saved post-QAT float
-checkpoint, so quantization-only numerical error cannot be isolated by comparing
-the final binary to `model.npz`. At four example contexts the mean absolute
-logit difference against the *pre-QAT* checkpoint ranged from 0.2166 to 0.4578
-(logit units), and an argmax differed for one. This includes QAT changes and is
-not a quantization tolerance test. For the three C++ function prompt cases above, compiling the entire prompt plus
-1,500 generated characters with `g++ -std=c++20 -fsyntax-only` failed in all
-three cases; the generated samples may also end mid-statement, so this is not a
-perfect measure of C++ quality. No syntax-validity improvement is claimed.
+| Case (seed) | Repetition before → after | Space run before → after | Newlines before → after |
+|---|---:|---:|---:|
+| boot seed (1235) | 0.9045 → 0.4402 | 1282 → 56 | 10 → 73 |
+| short completion (0001) | 0.7956 → 0.4983 | 1009 → 94 | 35 → 59 |
+| multiline function (0002) | 0.9586 → 0.4021 | 1426 → 16 | 3 → 58 |
+| long generation (caff) | 0.9078 → 0.4723 | 1325 → 162 | 8 → 64 |
+| balanced delimiters (0003) | 0.9993 → 0.4776 | 1500 → 61 | 0 → 70 |
+
+In another 20 boot-seed trials (odd seeds 1 through 39), longest runs were
+281–1479 before and 16–158 after; repeated 4-gram fraction fell in every case.
+The fixed suite is exactly reproducible. The first boot-seed sample begins
+with a run of recognizable includes, but subsequent output is often incoherent.
+
+These repetition improvements do **not** establish improved C++ correctness.
+All three function-prompt completions fail `g++ -std=c++20 -fsyntax-only`
+both before and after; the fixed-length samples can also end mid-statement.
+As a rough continuity proxy, the fraction of non-whitespace 6-grams in the first
+300 output characters found in the training corpus was 0.710 → 0.708 for the
+boot seed, 0.626 → 0.449 for short completion, 0.631 → 0.351 for multiline,
+and 0.473 → 0.580 for long generation. The balanced case had no non-whitespace
+6-grams before and 0.381 after. Counts differ because the samples differ; this
+is a crude, training-corpus-based diagnostic, not a quality score. It exposes
+some early-output regressions. The small model does not reliably produce
+compilable or globally coherent C++ and may still repeat for other contexts.
+
+## Numerical and runtime checks
+
+On 2,000 deterministically chosen corpus contexts, the softmax branch's Q14
+weight distribution had mean total-variation distance 0.00290 and maximum
+0.00699 from floating-point softmax of the **same integer logits**. The original
+cutoff excluded the actual next corpus character in 490 contexts; the Q14
+softmax grid assigned zero weight to that target in 2. This checks the sampler
+approximation, not model quantization accuracy or generated code validity.
+`tests/test_sampling.py` compares the extension's actual 16-bit instructions to
+the independent sampler for both branches and extreme int16 logits, and checks
+the 65,536-state all-space graph. `tests/test_inference.py` compares real
+boot-sector hidden activations, logits and choices with the integer reference,
+and checks 270 consecutive context/RNG updates with BIOS interrupts stubbed.
+`tests/test_highlighter.py` executes the assembled highlighter at the identifier
+buffer boundary. These tests do not prove every context or hardware BIOS.
+
+The image was booted and VGA text observed in headless QEMU's x86_64 system
+emulator with the specified IDE raw-disk setup. The exact
+`qemu-system-i386` invocation remains untested because that executable was
+unavailable. Full retraining/QAT was not run. There is no post-QAT floating
+checkpoint, so comparing final integer logits with `model.npz` cannot isolate
+quantization error. At four example contexts, mean absolute logit differences
+against that pre-QAT checkpoint ranged from 0.2166 to 0.4578 logit units;
+one of four argmaxes differed. The differences include QAT changes.

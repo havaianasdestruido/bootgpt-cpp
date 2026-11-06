@@ -2,10 +2,10 @@
 
 A neural network that boots your PC and dreams C++20.
 
-The MBR is 512 bytes of hand-written 16-bit x86 assembly (`460` bytes of code
+The MBR is 512 bytes of hand-written 16-bit x86 assembly (384 bytes of code
 before zero padding + `0xAA55`). It loads an `int8`/`int16` character-level
-model and a position-independent syntax highlighter from the following sectors,
-then runs inference in 16-bit real mode on a 386+. No OS, C runtime, or
+model and a position-independent highlighter and sampling extension from the
+following sectors, then runs inference in 16-bit real mode on a 386+. No OS, C runtime, or
 allocator is needed. Its colorized output resembles C++ systems code; it is not
 guaranteed to compile.
 
@@ -107,8 +107,9 @@ final quantized model and syntax highlighter used by `disk.img`. See
 - **`boot.asm`** is the entire bare-metal runtime inside the 510-byte MBR code
   budget: `int 13h` to load weights into `0x0800:0000`, `int 10h` colored
   output, integer softclip `trunc(64*p / (4096 + |p|))` via `cdq`/`idiv`, and
-  exact Min-P logit-margin gating (`L[v] >= L_max - MARGIN`) with PIT-seeded
-  16-bit LCG noise (`int 1Ah`).
+  a PIT-seeded 16-bit LCG (`int 1Ah`). Its sampler extension mixes the
+  original Min-P/noise rule with a Q14 softmax draw to keep alternatives
+  reachable; see `model/GENERATION_DIAGNOSIS.md` for measured limitations.
 - **`syntax.asm`** is a position-independent streaming C++ highlighter loaded
   alongside the model. It maps the GitHub-inspired palette to standard VGA
   attributes: gray text, light-red keywords, magenta functions, cyan constants
@@ -137,10 +138,11 @@ can also use `--from-dir PATH` with originals arranged as `PROJECT/UPSTREAM_PATH
 
 ## Generation status and runtime-only rebuild
 
-The model can still enter an endless space loop; the highlighter fix prevents
-long identifiers from being silently truncated but does not fix this model /
-sampler failure. See [the investigation](model/GENERATION_DIAGNOSIS.md) for
-reproduction, measurements, and limitations.
+The original hard-cutoff sampler could become trapped indefinitely in spaces.
+The revised sampler escapes that state and the highlighter no longer discards
+long identifier characters. Other loops, discontinuities and invalid C++ remain
+possible. See [the investigation](model/GENERATION_DIAGNOSIS.md) for
+before/after measurements and limitations.
 
 To update only the boot sector and highlighter around the existing trained
 weights, install NASM and run `python3 tools/rebuild_runtime.py`. This preserves
@@ -159,7 +161,9 @@ synthetic translation units and exercise their C++ examples. The C++ tests
 require `g++` with C++20 support. NASM tests are skipped when NASM is absent.
 The instruction-level regression tests additionally require NumPy and Unicorn:
 `python3 -m pip install numpy unicorn`. Run the evaluation with
-`python3 tools/evaluate_generation.py`; `--trace` adds per-token diagnostics.
+`python3 tools/evaluate_generation.py`; `--trace` adds per-token diagnostics,
+`--legacy` selects the old sampler, and `--syntax-check` invokes g++ on the
+function-prompt completions.
 
 ## Prior art
 

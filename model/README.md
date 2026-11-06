@@ -23,6 +23,8 @@ the main README and `../upstream_sources.json`.
 
 The highlighter can be rebuilt without retraining via
 `python3 tools/rebuild_runtime.py`; see `GENERATION_DIAGNOSIS.md` for the
-remaining generation-loop bug and instruction-level validation. The committed
-`weights.bin` includes the corrected highlighter, while its trained-weight
-prefix and the model parameters remain unchanged.
+generation-loop correction and instruction-level validation. The committed
+`weights.bin` includes the corrected highlighter and sampling extension; its
+trained-weight prefix is unchanged. The sampler metadata and boot sector have
+changed, but no retraining was required. The old `training.log` describes the
+original Min-P-only sampler and is kept as a historical training record.
