@@ -1,14 +1,8 @@
 .venv/
 corpus.txt
-model.npz
-weights.bin
-params.inc
-params.json
-boot.bin
 boot.dbg.bin
 boot.lst
 boot.dbg.lst
-disk.img
 disk.dbg.img
 *.ppm
 shot_*.png
@@ -17,3 +11,6 @@ rec.sock
 __pycache__/
 .DS_Store
 launch.sh
+
+# Vendored training data is downloaded locally, not committed.
+/source_code/

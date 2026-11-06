@@ -12,11 +12,13 @@ import shutil
 import socket
 import subprocess
 import time
+from pathlib import Path
 
 TAKE = 20          # total seconds
 KEY_AT = 15        # keypress moment (reboot on camera)
 FPS = 15
 FRAMES = "/tmp/bootgpt_frames"
+DISK = Path(__file__).resolve().parent / "model" / "disk.img"
 
 
 def main():
@@ -25,7 +27,7 @@ def main():
 
     qemu = subprocess.Popen(
         ["qemu-system-i386",
-         "-drive", "format=raw,file=disk.img,if=ide", "-boot", "c",
+         "-drive", f"format=raw,file={DISK},if=ide", "-boot", "c",
          "-monitor", "unix:rec.sock,server,nowait",
          "-display", "none", "-serial", "none"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
