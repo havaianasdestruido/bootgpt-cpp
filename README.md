@@ -2,10 +2,12 @@
 
 A neural network that boots your PC and dreams C++20.
 
-The MBR is 512 bytes of hand-written 16-bit x86 assembly. It loads an
-`int8`/`int16` character-level model from the following sectors and runs
-inference in 16-bit real mode on a 386+. No OS, C runtime, or allocator is
-needed. Its output resembles C++ systems code; it is not guaranteed to compile.
+The MBR is 512 bytes of hand-written 16-bit x86 assembly (`460` bytes of code
+before zero padding + `0xAA55`). It loads an `int8`/`int16` character-level
+model and a position-independent syntax highlighter from the following sectors,
+then runs inference in 16-bit real mode on a 386+. No OS, C runtime, or
+allocator is needed. Its colorized output resembles C++ systems code; it is not
+guaranteed to compile.
 
 ![demo](bootgpt_demo.gif)
 
@@ -81,8 +83,8 @@ python3 tools/fetch_sources.py  # download the pinned training files once
 
 The build overwrites the trained artifacts in `model/`. `model.npz` contains
 floating-point weights before quantization-aware training; `weights.bin` is the
-final quantized model used by `disk.img`. See `model/README.md` for the current
-artifacts and their training details.
+final quantized model and syntax highlighter used by `disk.img`. See
+`model/README.md` for the current artifacts and their training details.
 
 ## Pieces
 
@@ -103,10 +105,14 @@ artifacts and their training details.
   and more varied corpus does not guarantee that this small model will generate
   correct or non-repetitive code.
 - **`boot.asm`** is the entire bare-metal runtime inside the 510-byte MBR code
-  budget: `int 13h` to load weights into `0x0800:0000`, `int 10h` teletype
+  budget: `int 13h` to load weights into `0x0800:0000`, `int 10h` colored
   output, integer softclip `trunc(64*p / (4096 + |p|))` via `cdq`/`idiv`, and
   exact Min-P logit-margin gating (`L[v] >= L_max - MARGIN`) with PIT-seeded
   16-bit LCG noise (`int 1Ah`).
+- **`syntax.asm`** is a position-independent streaming C++ highlighter loaded
+  alongside the model. It maps the GitHub-inspired palette to standard VGA
+  attributes: gray text, light-red keywords, magenta functions, cyan constants
+  and strings, yellow built-ins, dark-gray comments, and green entities on black.
 - **`record.py`** records `bootgpt_demo.mp4` and `bootgpt_demo.gif` from
   headless QEMU via the monitor socket.
 

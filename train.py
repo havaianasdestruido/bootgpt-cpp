@@ -42,8 +42,10 @@ assert all(ch == "\n" or " " <= ch <= "~" for ch in vocab), \
 _header = (b"bootgpt-cpp: bare-metal neural network dreaming C++20"
            b"\r\nno os involved - press any key to reboot\r\n\r\n\x00")
 _bye = b"\r\n// build interrupted - rebooting...\r\n\x00"
-_blob_size = V + V * E + H * C * E + V * H + 2 * H + 2 * V + C + len(_header) + len(_bye)
-assert _blob_size <= 60 * 512 and 0x8000 + _blob_size < 0x10000, \
+_syntax_size = (MODEL_DIR / "syntax.bin").stat().st_size
+_blob_size = (V + V * E + H * C * E + V * H + 2 * H + 2 * V + C
+              + len(_header) + len(_bye) + 15 + _syntax_size)
+assert _blob_size <= 62 * 512 and 0x8000 + _blob_size < 0x10000, \
     f"vocabulary of {V} characters exceeds the boot weight budget"
 assert "\n" in vocab and " " in vocab
 vmap = {ch: i for i, ch in enumerate(vocab)}
@@ -386,10 +388,17 @@ HDR_ADDR = 0x8000 + len(blob)
 blob += _header
 BYE_ADDR = 0x8000 + len(blob)
 blob += _bye
+
+# The syntax highlighter is position-independent code loaded with the model.
+# Keeping it here leaves the MBR's scarce 510 bytes available for inference.
+blob += b"\x00" * (-len(blob) % 16)
+SYNTAX_ADDR = 0x8000 + len(blob)
+with (MODEL_DIR / "syntax.bin").open("rb") as syntax_file:
+    blob += syntax_file.read()
 assert 0x8000 + len(blob) < 0x10000, "DS=0 16-bit address overflow"
 
 SECTORS = (len(blob) + 511) // 512
-assert SECTORS <= 60, f"weights ({SECTORS} sectors) exceed single CHS track read"
+assert SECTORS <= 62, f"weights ({SECTORS} sectors) exceed single CHS track read"
 blob += b"\x00" * (SECTORS * 512 - len(blob))
 (MODEL_DIR / "weights.bin").write_bytes(blob)
 
@@ -414,7 +423,8 @@ with (MODEL_DIR / "params.inc").open("w") as f:
             f"SECTORS  equ {SECTORS}\n"
             f"SEEDADDR equ {SEED_ADDR:#x}\n"
             f"HDRADDR  equ {HDR_ADDR:#x}\n"
-            f"BYEADDR  equ {BYE_ADDR:#x}\n")
+            f"BYEADDR  equ {BYE_ADDR:#x}\n"
+            f"SYNTAXADDR equ {SYNTAX_ADDR:#x}\n")
 
 with (MODEL_DIR / "params.json").open("w") as f:
     json.dump({

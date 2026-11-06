@@ -1,5 +1,6 @@
 .venv/
 corpus.txt
+/model/syntax.bin
 boot.dbg.bin
 boot.lst
 boot.dbg.lst

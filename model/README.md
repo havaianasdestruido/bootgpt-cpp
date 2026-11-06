@@ -7,7 +7,8 @@ the samples are often invalid or repetitive C++.
 
 - `disk.img`: bootable disk image containing the boot sector and final weights.
 - `boot.bin`: assembled 512-byte boot sector.
-- `weights.bin`: quantized weights, vocabulary, seed and runtime strings.
+- `weights.bin`: quantized weights, vocabulary, seed, runtime strings and the
+  position-independent VGA syntax highlighter.
 - `params.inc`: assembly constants generated for those weights.
 - `params.json`: model dimensions, quantization settings and seed indices.
 - `model.npz`: floating-point weights **before** quantization-aware training.

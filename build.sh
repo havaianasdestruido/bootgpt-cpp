@@ -8,6 +8,7 @@ if [ ! -x "$PYTHON" ]; then
     PYTHON="python3"
 fi
 
+nasm -f bin syntax.asm -o model/syntax.bin # position-independent VGA highlighter
 "$PYTHON" corpus_gen.py             # mixed real and synthetic C++ corpus
 "$PYTHON" train.py                  # train and quantize into model/
 nasm -f bin boot.asm -o model/boot.bin    # 512-byte stage 1 (asserted below)

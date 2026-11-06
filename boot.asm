@@ -1,7 +1,7 @@
 ; bootgpt-cpp: a neural network that boots your PC and dreams C++20.
 ; Stage 1 (this, <=510 bytes): loads int8 weights from sectors 2+ and
 ; runs char-level MLP inference in 16-bit real mode on a 386+.
-; Weights (FS=0x0800 segment, physical 0x08000..0x0F7FF):
+; Weights (FS=0x0800 segment, physical 0x08000..0x0FBFF):
 ;   +0       vocab[VOCAB]         ASCII, '\n'=10
 ;   +VOCAB   emb[VOCAB*EMBDIM]    int8, [v*EMBDIM+r]
 ;   +W1_OFF  W1[HID*(CTX*EMBDIM)] int8, [j*(CTX*EMBDIM)+i], i = k*EMBDIM+r
@@ -11,7 +11,7 @@
 ;   +...     seedctx[CTX], hdr, byemsg (addressed via DS=0 at 0x8000+off)
 ; Runtime (DS=0, SS=0):
 ;   ctx 0x7600[32], y 0x7700[100], logits 0x7800[176], xin 0x7A00[192],
-;   rnd 0x7B80, bootdrv 0x7B82, dbgctr 0x7B84
+;   rnd 0x7B80, bootdrv 0x7B82, dbgctr 0x7B84, lexer 0x7B86..0x7BAF
 
 [org 0x7C00]
 [cpu 386]
@@ -29,6 +29,8 @@ BOOTDRV     equ 0x7B82
 DBGCTR      equ 0x7B84
 
 start:
+        jmp word 0x0000:.flat    ; normalize CS for absolute second-stage jump
+.flat:
         cli
         xor ax, ax
         mov ds, ax
@@ -36,6 +38,9 @@ start:
         mov sp, 0x7000
         sti
         mov [BOOTDRV], dl
+        mov dword [0x7B86], 0   ; lexer state/escape/token length/flags
+        mov ax, 0x0003          ; 80x25 text, black background, clear screen
+        int 0x10
         mov ax, 0x0800
         mov fs, ax
         mov es, ax
@@ -266,11 +271,8 @@ infer:
         ret                     ; bx = argmax index (bh=0)
 
 ; ---------------- bios helpers ----------------
-putc:                           ; AL = char (clobbers AX/BX, FS untouched)
-        mov ah, 0x0E
-        xor bx, bx
-        int 0x10
-        ret
+putc:                           ; AL = char; colored second-stage BIOS output
+        jmp SYNTAXADDR
 
 puts:                           ; DS:SI -> asciiz
         lodsb

@@ -11,7 +11,8 @@ A1SHIFT  equ -4
 A2SHIFT  equ 3
 MARGIN   equ 240
 NOISE    equ 6
-SECTORS  equ 59
+SECTORS  equ 62
 SEEDADDR equ 0xf43b
 HDRADDR  equ 0xf45b
 BYEADDR  equ 0xf4bf
+SYNTAXADDR equ 0xf4f0
