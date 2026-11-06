@@ -100,11 +100,13 @@ and checks 270 consecutive context/RNG updates with BIOS interrupts stubbed.
 `tests/test_highlighter.py` executes the assembled highlighter at the identifier
 buffer boundary. These tests do not prove every context or hardware BIOS.
 
-The image was booted and VGA text observed in headless QEMU's x86_64 system
-emulator with the specified IDE raw-disk setup. The exact
-`qemu-system-i386` invocation remains untested because that executable was
-unavailable. Full retraining/QAT was not run. There is no post-QAT floating
-checkpoint, so comparing final integer logits with `model.npz` cannot isolate
-quantization error. At four example contexts, mean absolute logit differences
+The image was booted and VGA text observed in both QEMU's x86_64 system
+emulator and QEMU 0.14.1's i386 system emulator. The i386 run used the
+requested `-drive format=raw,file=model/disk.img,if=ide -boot c` arguments,
+with additional `-L` and headless VNC/QMP options for the test environment.
+The i386 emulator was built from the QEMU v0.14.1 source tag; the VGA buffer was
+read over QMP after boot. Full retraining/QAT was not run. There is no post-QAT
+floating checkpoint, so comparing final integer logits with `model.npz` cannot
+isolate quantization error. At four example contexts, mean absolute logit differences
 against that pre-QAT checkpoint ranged from 0.2166 to 0.4578 logit units;
 one of four argmaxes differed. The differences include QAT changes.
