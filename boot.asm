@@ -1,7 +1,7 @@
 ; bootgpt-cpp: a neural network that boots your PC and dreams C++20.
 ; Stage 1 (this, <=510 bytes): loads int8 weights from sectors 2+ and
 ; runs char-level MLP inference in 16-bit real mode on a 386+.
-; Weights (FS=0x0800 segment, physical 0x08000..0x0F7FF):
+; Weights (FS=0x0800 segment, physical 0x08000..0x0FBFF):
 ;   +0       vocab[VOCAB]         ASCII, '\n'=10
 ;   +VOCAB   emb[VOCAB*EMBDIM]    int8, [v*EMBDIM+r]
 ;   +W1_OFF  W1[HID*(CTX*EMBDIM)] int8, [j*(CTX*EMBDIM)+i], i = k*EMBDIM+r
@@ -16,7 +16,7 @@
 [org 0x7C00]
 [cpu 386]
 [bits 16]
-%include "params.inc"
+%include "model/params.inc"
 
 EMB_OFF     equ VOCAB
 
