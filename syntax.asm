@@ -23,6 +23,7 @@ ST_HEADER       equ 4
 ST_SLASH        equ 5
 ST_IDENT        equ 6
 ST_NUMBER       equ 7
+ST_LONG_IDENT   equ 8           ; identifier streamed after token buffer fills
 
 F_INCLUDE       equ 0x40
 F_DECL          equ 0x80
@@ -32,6 +33,7 @@ ESCAPE          equ 0x7b87
 TOKENLEN        equ 0x7b88
 FLAGS           equ 0x7b89
 INCHAR          equ 0x7b8a
+LONGCOLOR       equ 0x7b8b
 TOKEN           equ 0x7b90        ; 32-byte, NUL-terminated token buffer
 
 highlight:
@@ -57,6 +59,8 @@ highlight:
         cmp cl, ST_SLASH
         je .slash
         cmp cl, ST_IDENT
+        je .ident
+        cmp cl, ST_LONG_IDENT
         je .ident
         jmp .number               ; ST_NUMBER
 
@@ -205,17 +209,32 @@ highlight:
         cmp al, 'z'
         ja .flush_ident
 .append_ident:
+        cmp byte [STATE], ST_LONG_IDENT
+        je .stream_ident
         movzx bx, byte [TOKENLEN]
         cmp bl, 31
-        jae .done
+        jb .buffer_ident
+        ; The identifier cannot be a dictionary keyword. Emit its buffered
+        ; prefix and stream the rest instead of silently dropping characters.
+        call flush_token
+        mov [LONGCOLOR], bl
+        mov byte [STATE], ST_LONG_IDENT
+.stream_ident:
+        mov bl, [LONGCOLOR]
+        mov al, [INCHAR]
+        jmp .emit
+.buffer_ident:
         mov [TOKEN+bx], al
         inc bx
         mov byte [TOKEN+bx], 0
         mov [TOKENLEN], bl
         jmp .done
 .flush_ident:
-        mov byte [STATE], ST_DEFAULT
+        cmp byte [STATE], ST_LONG_IDENT
+        je .ident_flushed
         call flush_token
+.ident_flushed:
+        mov byte [STATE], ST_DEFAULT
         mov al, [INCHAR]
         mov bl, COLOR_TEXT
         jmp .default

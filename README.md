@@ -135,12 +135,31 @@ before building or testing; subsequent builds are offline. If GitHub rate-limits
 the download, rerun the command later; already verified files are reused. You
 can also use `--from-dir PATH` with originals arranged as `PROJECT/UPSTREAM_PATH`.
 
+## Generation status and runtime-only rebuild
+
+The model can still enter an endless space loop; the highlighter fix prevents
+long identifiers from being silently truncated but does not fix this model /
+sampler failure. See [the investigation](model/GENERATION_DIAGNOSIS.md) for
+reproduction, measurements, and limitations.
+
+To update only the boot sector and highlighter around the existing trained
+weights, install NASM and run `python3 tools/rebuild_runtime.py`. This preserves
+the weight/seed prefix and existing metadata, reassembles both runtime sources,
+and refuses to exceed the current sector budget. `./build.sh` instead performs
+full corpus generation, training and QAT before rebuilding the disk. The
+committed `boot.bin`, `weights.bin`, `disk.img`, and parameter files are needed
+to distribute the bootable model without retraining; `model.npz` is the
+pre-QAT checkpoint and is not enough to reconstruct the final weights alone.
+
 ## Tests
 
 Run `python3 -m unittest discover -s tests -v` to check the bundled model, corpus constraints,
 source hashes, comment stripping, and deterministic mixing; also compile sample
 synthetic translation units and exercise their C++ examples. The C++ tests
-require `g++` with C++20 support.
+require `g++` with C++20 support. NASM tests are skipped when NASM is absent.
+The instruction-level regression tests additionally require NumPy and Unicorn:
+`python3 -m pip install numpy unicorn`. Run the evaluation with
+`python3 tools/evaluate_generation.py`; `--trace` adds per-token diagnostics.
 
 ## Prior art
 

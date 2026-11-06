@@ -20,3 +20,9 @@ a BIOS-capable emulator. Run `./build.sh` from the repository root to regenerate
 these files (except the saved training log). Regeneration overwrites the current
 artifacts. The upstream training sources and their licenses are documented in
 the main README and `../upstream_sources.json`.
+
+The highlighter can be rebuilt without retraining via
+`python3 tools/rebuild_runtime.py`; see `GENERATION_DIAGNOSIS.md` for the
+remaining generation-loop bug and instruction-level validation. The committed
+`weights.bin` includes the corrected highlighter, while its trained-weight
+prefix and the model parameters remain unchanged.

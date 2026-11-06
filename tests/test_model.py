@@ -46,6 +46,19 @@ class ModelArtifactTests(unittest.TestCase):
             self.assertIsNone(model.testzip())
 
     @unittest.skipUnless(shutil.which("nasm"), "nasm is required")
+    def test_bundled_highlighter_rebuilds(self):
+        inc = (MODEL / "params.inc").read_text()
+        offset = int(re.search(r"^SYNTAXADDR\s+equ\s+(\S+)", inc, re.M).group(1), 0) - 0x8000
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "syntax.bin"
+            subprocess.run(["nasm", "-f", "bin", "syntax.asm", "-o", str(output)],
+                           cwd=ROOT, check=True)
+            tail = (MODEL / "weights.bin").read_bytes()[offset:]
+            code = output.read_bytes()
+            self.assertEqual(tail[:len(code)], code)
+            self.assertEqual(tail[len(code):], bytes(len(tail) - len(code)))
+
+    @unittest.skipUnless(shutil.which("nasm"), "nasm is required")
     def test_boot_sector_rebuilds(self):
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "boot.bin"
