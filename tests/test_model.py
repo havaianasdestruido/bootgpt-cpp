@@ -22,13 +22,17 @@ class ModelArtifactTests(unittest.TestCase):
         for name, value in (("VOCAB", vocab), ("CTX", ctx), ("EMBDIM", emb),
                             ("HID", hidden), ("SECTORS", params["SECTORS"])):
             self.assertEqual(inc[name], value)
-        for name in ("A1SHIFT", "A2SHIFT", "MARGIN", "NOISE"):
+        for name in ("A1SHIFT", "A2SHIFT"):
             self.assertEqual(inc[name], params[name])
+        ee, ew1, ew2 = params["scales"]
+        self.assertEqual(params["A1SHIFT"], ee + ew1 - 12)
+        self.assertEqual(params["A2SHIFT"], 6 + ew2 - 8)
         self.assertEqual(inc["W1_OFF"], vocab * (1 + emb))
         self.assertEqual(inc["W2_OFF"], inc["W1_OFF"] + hidden * ctx * emb)
         self.assertEqual(inc["B1_OFF"], inc["W2_OFF"] + vocab * hidden)
         self.assertEqual(inc["B2_OFF"], inc["B1_OFF"] + 2 * hidden)
         self.assertEqual(inc["SEEDADDR"], 0x8000 + inc["B2_OFF"] + 2 * vocab)
+        self.assertEqual(params["SAMPLER"], "epsilon-soft-q14")
         weights = (MODEL / "weights.bin").read_bytes()
         self.assertEqual(len(weights), params["SECTORS"] * 512)
         self.assertEqual(len(set(weights[:vocab])), vocab)
@@ -44,6 +48,19 @@ class ModelArtifactTests(unittest.TestCase):
                              {"emb.npy", "W1.npy", "b1.npy", "W2.npy",
                               "b2.npy", "vocab.npy"})
             self.assertIsNone(model.testzip())
+
+    @unittest.skipUnless(shutil.which("nasm"), "nasm is required")
+    def test_bundled_highlighter_rebuilds(self):
+        inc = (MODEL / "params.inc").read_text()
+        offset = int(re.search(r"^SYNTAXADDR\s+equ\s+(\S+)", inc, re.M).group(1), 0) - 0x8000
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "syntax.bin"
+            subprocess.run(["nasm", "-f", "bin", "syntax.asm", "-o", str(output)],
+                           cwd=ROOT, check=True)
+            tail = (MODEL / "weights.bin").read_bytes()[offset:]
+            code = output.read_bytes()
+            self.assertEqual(tail[:len(code)], code)
+            self.assertEqual(tail[len(code):], bytes(len(tail) - len(code)))
 
     @unittest.skipUnless(shutil.which("nasm"), "nasm is required")
     def test_boot_sector_rebuilds(self):

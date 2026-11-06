@@ -23,6 +23,7 @@ ST_HEADER       equ 4
 ST_SLASH        equ 5
 ST_IDENT        equ 6
 ST_NUMBER       equ 7
+ST_LONG_IDENT   equ 8           ; identifier streamed after token buffer fills
 
 F_INCLUDE       equ 0x40
 F_DECL          equ 0x80
@@ -32,7 +33,12 @@ ESCAPE          equ 0x7b87
 TOKENLEN        equ 0x7b88
 FLAGS           equ 0x7b89
 INCHAR          equ 0x7b8a
+LONGCOLOR       equ 0x7b8b
 TOKEN           equ 0x7b90        ; 32-byte, NUL-terminated token buffer
+
+; Entry points: highlighter at +0, epsilon-soft sampler at +2.
+jmp short highlight
+jmp sampler
 
 highlight:
         mov [INCHAR], al
@@ -57,6 +63,8 @@ highlight:
         cmp cl, ST_SLASH
         je .slash
         cmp cl, ST_IDENT
+        je .ident
+        cmp cl, ST_LONG_IDENT
         je .ident
         jmp .number               ; ST_NUMBER
 
@@ -205,17 +213,32 @@ highlight:
         cmp al, 'z'
         ja .flush_ident
 .append_ident:
+        cmp byte [STATE], ST_LONG_IDENT
+        je .stream_ident
         movzx bx, byte [TOKENLEN]
         cmp bl, 31
-        jae .done
+        jb .buffer_ident
+        ; The identifier cannot be a dictionary keyword. Emit its buffered
+        ; prefix and stream the rest instead of silently dropping characters.
+        call flush_token
+        mov [LONGCOLOR], bl
+        mov byte [STATE], ST_LONG_IDENT
+.stream_ident:
+        mov bl, [LONGCOLOR]
+        mov al, [INCHAR]
+        jmp .emit
+.buffer_ident:
         mov [TOKEN+bx], al
         inc bx
         mov byte [TOKEN+bx], 0
         mov [TOKENLEN], bl
         jmp .done
 .flush_ident:
-        mov byte [STATE], ST_DEFAULT
+        cmp byte [STATE], ST_LONG_IDENT
+        je .ident_flushed
         call flush_token
+.ident_flushed:
+        mov byte [STATE], ST_DEFAULT
         mov al, [INCHAR]
         mov bl, COLOR_TEXT
         jmp .default
@@ -465,3 +488,104 @@ dictionary:
         BUILTIN "void"
         BUILTIN "wchar_t"
         db 0
+
+; Epsilon-soft sampler: 3/4 original Min-P, 1/4 Q14 softmax. The
+; separate softmax draw keeps alternatives reachable without a repetition
+; penalty or context-specific rule. DX=max logit, BP=vocabulary size.
+; Q14 exp2 lookup has a 1/16 exponent step. A fresh LCG draw selects the
+; branch; the selected branch advances the LCG again before sampling.
+sampler:
+        mov [0x7b8c], bp
+        shl word [0x7b8c], 1
+        mov ax, [0x7b80]
+        imul ax, ax, 25173
+        add ax, 13849
+        mov [0x7b80], ax
+        cmp ah, 64              ; 64/256 -> softmax branch
+        jb .soft
+        movsx esi, dx
+        sub esi, 240            ; legacy Q8 Min-P margin
+        mov edi, 0x80000000
+        xor bx, bx
+        xor bp, bp
+.sl:
+        mov ax, [0x7b80]
+        imul ax, ax, 25173
+        add ax, 13849
+        mov [0x7b80], ax
+        movsx ecx, word [0x7800+bp]
+        cmp ecx, esi
+        jl .nx
+        mov al, ah
+        cbw
+        imul ax, ax, 6          ; legacy signed noise scale
+        movsx edx, ax
+        add ecx, edx
+        cmp ecx, edi
+        jle .nx
+        mov edi, ecx
+        mov bx, bp
+.nx:
+        add bp, 2
+        cmp bp, [0x7b8c]
+        jb .sl
+        shr bx, 1
+        ret
+.soft:
+        call .base
+.base:
+        pop bx
+        sub bx, .base
+        add bx, softmax_table
+        mov [0x7b8e], bx
+        movsx esi, dx
+        xor edi, edi
+        xor bp, bp
+.calc_weight:
+        movsx eax, word [0x7800+bp]
+        neg eax
+        add eax, esi
+        imul eax, eax, 23
+        add eax, 128
+        shr eax, 8
+        cmp eax, 224
+        jae .zero_weight
+        mov ecx, eax
+        and eax, 15
+        shl ax, 1
+        mov bx, ax
+        add bx, [0x7b8e]
+        movzx eax, word [bx]
+        shr ecx, 4
+        shr eax, cl
+        jmp .save_weight
+.zero_weight:
+        xor eax, eax
+.save_weight:
+        mov [0x7200+bp], ax
+        add edi, eax
+        add bp, 2
+        cmp bp, [0x7b8c]
+        jb .calc_weight
+        mov ax, [0x7b80]
+        imul ax, ax, 25173
+        add ax, 13849
+        mov [0x7b80], ax
+        movzx eax, ax
+        mul edi
+        shrd eax, edx, 16
+        xor bx, bx
+.pick:
+        movzx ecx, word [0x7200+bx]
+        cmp eax, ecx
+        jb .chosen
+        sub eax, ecx
+        add bx, 2
+        jmp .pick
+.chosen:
+        shr bx, 1
+        ret
+
+softmax_table:
+        dw 16384,15689,15024,14387,13777,13193,12634,12098
+        dw 11585,11094,10624,10173,9742,9329,8933,8555
