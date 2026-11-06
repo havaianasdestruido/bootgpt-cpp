@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Train a nano neural LM for the boot sector, quantize to int8,
-and simulate the EXACT integer arithmetic the asm will perform.
+"""Train a bare-metal C++20 neural LM for the 512-byte boot sector,
+quantize to int8/int16, and simulate the EXACT integer arithmetic in boot.asm.
 
 Everything the boot sector does is defined here first; boot.asm must match.
 """
@@ -10,39 +10,54 @@ import numpy as np
 rng = np.random.default_rng(7)
 
 # ---------------- architecture (frozen) ----------------
-V = 64      # vocab (6-bit indices)
-C = 8       # context chars
+V = 88      # vocab (full C++20 corpus charset: \n, space, alnum, operators)
+C = 32      # context chars (covers full C++ line + indentation + signature)
 E = 6       # embedding dim
-H = 96      # hidden units
+H = 100     # hidden units
 Q = 12      # activation fixed-point (Q12)
+LQ = 8      # logit fixed-point (Q8, int16)
 
-STEPS = 40000
+STEPS = 50000
 BATCH = 512
-LR = 0.008
+LR = 0.01
 
 # ---------------- data ----------------
 text = open("corpus.txt").read()
 freq = {}
 for ch in text:
     freq[ch] = freq.get(ch, 0) + 1
-top = sorted(freq.items(), key=lambda kv: -kv[1])
-vocab = [ch for ch, _ in top[: V - 1]]
-if "\n" not in vocab:
-    vocab[-1] = "\n"
-vocab.append("\n")
-assert len(vocab) == V, len(vocab)
+top = sorted(freq.items(), key=lambda kv: (-kv[1], kv[0]))
+assert len(top) == V, (len(top), V)
+vocab = [ch for ch, _ in top]
+assert "\n" in vocab and " " in vocab
 vmap = {ch: i for i, ch in enumerate(vocab)}
 space_id = vmap[" "]
 
-ids = np.array([vmap.get(ch, space_id) for ch in text], dtype=np.int64)
-print("corpus chars:", len(ids), "vocab:", "".join(
+ids = np.array([vmap[ch] for ch in text], dtype=np.int64)
+print("corpus chars:", len(ids), "vocab size:", len(vocab), "vocab:", "".join(
     c if c != "\n" else "\\n" for c in vocab))
 
+# Identifier-char indices for annealed distant-context dropout
+ident_ids = np.array(
+    [i for i, ch in enumerate(vocab) if ch.isalnum() or ch == "_"],
+    dtype=np.int64,
+)
+is_ident = np.zeros(V, dtype=bool)
+is_ident[ident_ids] = True
+
+# Pick an exact in-distribution 32-char seed context ending at "\n\n" right
+# before "#include <" so generated code starts cleanly at column 0 of line 1.
+_seed_anchor = text.find("\n    return 0;\n}\n\n#pragma once\n\n#include <")
+assert _seed_anchor >= 0, "seed anchor not found in corpus.txt"
+SEED_STR = text[_seed_anchor : _seed_anchor + C]
+assert len(SEED_STR) == C and SEED_STR.endswith("\n\n")
+seed_ctx = [vmap[c] for c in SEED_STR]
+
 # ---------------- model ----------------
-emb = rng.normal(0, 0.1, (V, E))
-W1 = rng.normal(0, 0.2, (H, C * E))   # [j][i]
+emb = rng.normal(0, 0.12, (V, E))
+W1 = rng.normal(0, 1.0 / np.sqrt(C * E), (H, C * E))   # [j][i]
 b1 = np.zeros(H)
-W2 = rng.normal(0, 0.2, (V, H))       # [v][h]
+W2 = rng.normal(0, 1.0 / np.sqrt(H), (V, H))           # [v][h]
 b2 = np.zeros(V)
 
 params = [emb, W1, b1, W2, b2]
@@ -62,7 +77,7 @@ def softclip(a):          # activation used by BOTH training and asm
 
 
 def forward(x_idx):
-    xin = emb[x_idx].reshape(len(x_idx), C * E)      # [B, 30]
+    xin = emb[x_idx].reshape(len(x_idx), C * E)        # [B, C*E]
     a1 = xin @ W1.T + b1
     h = softclip(a1)
     logits = h @ W2.T + b2
@@ -70,10 +85,20 @@ def forward(x_idx):
 
 
 losses = []
+DROPOUT_CUTOFF = int(STEPS * 0.65)
+DISTANT_SPAN = C - 12     # keep the most recent 12 chars 100% clean
+
 for step in range(1, STEPS + 1):
     pos = rng.integers(0, len(ids) - C - 1, BATCH)
-    x_idx = np.stack([ids[pos + k] for k in range(C)], axis=1)   # [B,C]
+    x_idx = np.stack([ids[pos + k] for k in range(C)], axis=1)   # [B, C]
     y = ids[pos + C]
+
+    if step <= DROPOUT_CUTOFF:
+        p_drop = 0.08 * (1.0 - (step / DROPOUT_CUTOFF) * 0.5)
+        distant = x_idx[:, :DISTANT_SPAN]
+        mask = (rng.random(distant.shape) < p_drop) & is_ident[distant]
+        if mask.any():
+            distant[mask] = rng.choice(ident_ids, size=int(mask.sum()))
 
     xin, a1, h, logits = forward(x_idx)
     p = softmax(logits)
@@ -87,14 +112,14 @@ for step in range(1, STEPS + 1):
     gW2 = dlogits.T @ h
     gb2 = dlogits.sum(0)
     dh = dlogits @ W2
-    da1 = dh * (1.0 / (1.0 + np.abs(a1)) ** 2)     # softclip grad
+    da1 = dh * (1.0 / (1.0 + np.abs(a1)) ** 2)         # softclip grad
     gW1 = da1.T @ xin
     gb1 = da1.sum(0)
-    gemb_flat = (da1 @ W1)                          # [B, 30]
+    gemb_flat = da1 @ W1                               # [B, C*E]
     gemb = np.zeros_like(emb)
     np.add.at(gemb, x_idx.reshape(-1), gemb_flat.reshape(-1, E))
 
-    lr = LR * (0.1 ** (step / STEPS))
+    lr = LR * (0.04 ** (step / STEPS))
     for i, g in enumerate([gemb, gW1, gb1, gW2, gb2]):
         m[i] = beta1 * m[i] + (1 - beta1) * g
         v[i] = beta2 * v[i] + (1 - beta2) * g * g
@@ -102,17 +127,17 @@ for step in range(1, STEPS + 1):
         vh = v[i] / (1 - beta2 ** step)
         params[i] -= lr * mh / (np.sqrt(vh) + eps)
 
-    if step % 2500 == 0:
-        print(f"step {step:6d}  loss {np.mean(losses[-2500:]):.4f}")
+    if step % 5000 == 0:
+        print(f"step {step:6d}  loss {np.mean(losses[-5000:]):.4f}  lr {lr:.5f}")
 
 emb, W1, b1, W2, b2 = params
 np.savez("model.npz", emb=emb, W1=W1, b1=b1, W2=W2, b2=b2,
          vocab=np.array("".join(vocab)))
 
+
 # ---------------- float baseline sampler ----------------
-def gen_float(n, temp=0.9, seed_ctx=None):
-    ctx = list(seed_ctx if seed_ctx is not None else
-               [vmap.get(c, space_id) for c in "[   0.00"])
+def gen_float(n, temp=0.8, seed0=None):
+    ctx = list(seed0 if seed0 is not None else seed_ctx)
     out = []
     rs = np.random.default_rng(0)
     for _ in range(n):
@@ -125,17 +150,15 @@ def gen_float(n, temp=0.9, seed_ctx=None):
 
 
 print("\n--- FLOAT baseline sample ---")
-print(gen_float(500))
-
-# ---------------- quantization ----------------
-LQ = 8    # logit fixed-point Q8 (logits ±25 * 256 fits int16)
+print(gen_float(600))
 
 
-def pow2_scale(w):
-    """scale = 2^e, largest e such that max|w*2^e| <= 127"""
-    mx = np.abs(w).max()
+# ---------------- quantization + QAT (Straight-Through Estimator) ----------------
+def pct_pow2_scale(w, pct=99.8):
+    """scale = 2^e based on 99.8th percentile so single outliers don't waste int8 bits."""
+    mx = np.percentile(np.abs(w), pct)
     e = int(np.floor(np.log2(127.0 / mx))) if mx > 0 else 7
-    while np.abs(w * (1 << e)).max() > 127:
+    while np.percentile(np.abs(w) * (1 << e), pct) > 127:
         e -= 1
     return e
 
@@ -144,44 +167,94 @@ def q_int8(w, e):
     return np.clip(np.round(w * (1 << e)), -127, 127).astype(np.int8)
 
 
-# rescale emb/W1 (function-preserving) to equalize relative quantization
-# precision of both tensors, then use max-usage power-of-two scales.
-alpha = np.percentile(np.abs(emb), 95) / np.percentile(np.abs(W1), 95)
-emb = emb * alpha
-W1 = W1 / alpha
-
-ee = pow2_scale(emb)          # emb scale 2^ee
-ew1 = pow2_scale(W1)
-ew2 = pow2_scale(W2)
-
-emb_q = q_int8(emb, ee)
-W1_q = q_int8(W1, ew1)        # stored [j][i]
-W2_q = q_int8(W2, ew2)        # stored [v][h]
-
-
 def q_fix(w, q):
     return np.clip(np.round(w * (1 << q)), -32700, 32700).astype(np.int16)
 
 
+# Rescale emb/W1 (function-preserving) to equalize relative quantization
+# precision of both tensors, then select full-range power-of-two scales.
+alpha = np.percentile(np.abs(emb), 99.5) / np.percentile(np.abs(W1), 99.5)
+emb = emb * alpha
+W1 = W1 / alpha
+
+ee = pct_pow2_scale(emb)
+ew1 = pct_pow2_scale(W1)
+ew2 = pct_pow2_scale(W2)
+A1SHIFT = ee + ew1 - Q
+A2SHIFT = 6 + ew2 - LQ
+
+# 5,000 steps of Quantization-Aware Training (QAT) with Straight-Through
+# Estimator on the exact int8/int16 grid + integer softclip used by boot.asm.
+QAT_STEPS = 5000
+params_q = [emb, W1, b1, W2, b2]
+mq = [np.zeros_like(p) for p in params_q]
+vq = [np.zeros_like(p) for p in params_q]
+q_scales = [1 << ee, 1 << ew1, 1 << Q, 1 << ew2, 1 << LQ]
+q_clips = [127, 127, 32700, 127, 32700]
+qat_losses = []
+
+for qstep in range(1, QAT_STEPS + 1):
+    pos = rng.integers(0, len(ids) - C - 1, BATCH)
+    x_idx = np.stack([ids[pos + k] for k in range(C)], axis=1)
+    y = ids[pos + C]
+
+    emb_fq = np.clip(np.round(emb * (1 << ee)), -127, 127) / (1 << ee)
+    W1_fq = np.clip(np.round(W1 * (1 << ew1)), -127, 127) / (1 << ew1)
+    b1_fq = np.clip(np.round(b1 * (1 << Q)), -32700, 32700) / (1 << Q)
+    W2_fq = np.clip(np.round(W2 * (1 << ew2)), -127, 127) / (1 << ew2)
+    b2_fq = np.clip(np.round(b2 * (1 << LQ)), -32700, 32700) / (1 << LQ)
+
+    xin = emb_fq[x_idx].reshape(BATCH, C * E)
+    a1 = xin @ W1_fq.T + b1_fq
+    h_smooth = softclip(a1)
+    h_int = np.trunc(h_smooth * 64.0) / 64.0
+    h = h_smooth + (h_int - h_smooth)      # STE integer softclip
+    logits = h @ W2_fq.T + b2_fq
+
+    p = softmax(logits)
+    qat_losses.append(-np.log(p[np.arange(BATCH), y] + 1e-9).mean())
+
+    dl = p
+    dl[np.arange(BATCH), y] -= 1
+    dl /= BATCH
+    gW2 = dl.T @ h
+    gb2 = dl.sum(0)
+    dh = dl @ W2_fq
+    da1 = dh * (1.0 / (1.0 + np.abs(a1)) ** 2)
+    gW1 = da1.T @ xin
+    gb1 = da1.sum(0)
+    gemb_flat = da1 @ W1_fq
+    gemb = np.zeros_like(emb)
+    np.add.at(gemb, x_idx.reshape(-1), gemb_flat.reshape(-1, E))
+
+    qlr = 0.0003 * (0.15 ** (qstep / QAT_STEPS))
+    for i, g in enumerate([gemb, gW1, gb1, gW2, gb2]):
+        mq[i] = beta1 * mq[i] + (1 - beta1) * g
+        vq[i] = beta2 * vq[i] + (1 - beta2) * g * g
+        mh = mq[i] / (1 - beta1 ** qstep)
+        vh = vq[i] / (1 - beta2 ** qstep)
+        params_q[i] -= qlr * mh / (np.sqrt(vh) + eps)
+        lim = q_clips[i] / q_scales[i]
+        np.clip(params_q[i], -lim, lim, out=params_q[i])
+
+print(f"\nQAT fine-tune ({QAT_STEPS} steps): loss {np.mean(qat_losses[:500]):.4f} -> {np.mean(qat_losses[-500:]):.4f}")
+
+emb_q = q_int8(emb, ee)
+W1_q = q_int8(W1, ew1)        # stored [j][i]
+W2_q = q_int8(W2, ew2)        # stored [v][h]
 b1_q = q_fix(b1, Q)           # preact Q12
 b2_q = q_fix(b2, LQ)          # logits Q8
 
-# shifts may be negative: asm uses sar for >=0, shl for <0 (32-bit math,
-# preacts/logits are bounded by the model, not by int16)
-A1SHIFT = ee + ew1 - Q
-A2SHIFT = 6 + ew2 - LQ
 nclip1 = int((np.abs(W1_q) == 127).sum() + (np.abs(emb_q) == 127).sum())
 nclip2 = int((np.abs(W2_q) == 127).sum())
-print(f"\nscales: emb 2^{ee}  w1 2^{ew1}  w2 2^{ew2}  "
+print(f"scales: emb 2^{ee}  w1 2^{ew1}  w2 2^{ew2}  "
       f"a1shift {A1SHIFT}  a2shift {A2SHIFT}  "
       f"sat(emb,W1) {nclip1} sat(W2) {nclip2}")
 
 # ---------------- EXACT integer simulation of boot.asm ----------------
-import math
-
-emb_f = emb_q.reshape(-1)          # [v*E + r]
-W1_f = W1_q.reshape(-1).astype(np.int64)   # [j*(C*E) + i]
-W2_f = W2_q.reshape(-1).astype(np.int64)   # [v*H + h]
+emb_f = emb_q.reshape(-1)                      # [v*E + r]
+W1_f = W1_q.reshape(-1).astype(np.int64)       # [j*(C*E) + i]
+W2_f = W2_q.reshape(-1).astype(np.int64)       # [v*H + h]
 W1_m = W1_f.reshape(H, C * E)
 W2_m = W2_f.reshape(V, H)
 b1_i = b1_q.astype(np.int64)
@@ -197,113 +270,143 @@ tvec = np.vectorize(trunc_div)
 
 
 class BootSim:
-    """Mirrors boot.asm arithmetic instruction-for-instruction.
-    Integer dot products are exact regardless of summation order,
-    so vectorized numpy here == loops in asm."""
+    """Mirrors boot.asm arithmetic instruction-for-instruction."""
 
-    def __init__(self, noise_scale, seed=0x1234):
+    def __init__(self, noise_scale, margin=384, seed=0x1234):
         self.NS = noise_scale
-        self.rnd = seed & 0xFFFF or 1
+        self.MARGIN = margin
+        self.rnd = (seed & 0xFFFF) or 1
 
     def lcg(self):
         self.rnd = (self.rnd * 25173 + 13849) & 0xFFFF
         return self.rnd
 
-    def logits_for(self, ctx):
+    def preacts_and_logits(self, ctx):
         xin = np.array([emb_f[ctx[k] * E + r]
                         for k in range(C) for r in range(E)],
                        dtype=np.int64)
-        a1 = W1_m @ xin                                    # exact int64
+        a1 = W1_m @ xin
         p = (a1 >> A1SHIFT) if A1SHIFT >= 0 else (a1 << -A1SHIFT)
-        p = p + b1_i                                       # Q12, int32 range
+        p = p + b1_i
         y = tvec(p * 64, 4096 + np.abs(p))
         y = np.clip(y, -64, 64)
-        a2 = W2_m @ y                                      # exact int64
-        return ((a2 >> A2SHIFT) if A2SHIFT >= 0
-                else (a2 << -A2SHIFT)) + b2_i              # Q8
+        a2 = W2_m @ y
+        logits = ((a2 >> A2SHIFT) if A2SHIFT >= 0
+                  else (a2 << -A2SHIFT)) + b2_i
+        return p, y, logits
+
+    def logits_for(self, ctx):
+        return self.preacts_and_logits(ctx)[2]
+
+    def step_token(self, ctx):
+        logits = self.logits_for(ctx)
+        lmax = int(logits.max())
+        thresh = lmax - self.MARGIN
+        best = -(1 << 31)
+        bi = 0
+        for vi in range(V):
+            rnd = self.lcg()
+            lv = int(logits[vi])
+            if lv < thresh:
+                continue
+            r8 = (rnd >> 8) & 0xFF
+            if r8 >= 128:
+                r8 -= 256
+            cand = lv + r8 * self.NS
+            if cand > best:
+                best, bi = cand, vi
+        return bi
 
     def gen(self, n, ctx0):
         ctx = list(ctx0)
         out = []
         for _ in range(n):
-            logits = self.logits_for(ctx)
-            best, bi = -(1 << 30), 0
-            for vi in range(V):
-                r8 = (self.lcg() >> 8) & 0xFF
-                if r8 >= 128:
-                    r8 -= 256
-                cand = int(logits[vi]) + r8 * self.NS
-                if cand > best:
-                    best, bi = cand, vi
+            bi = self.step_token(ctx)
             out.append(vocab[bi])
             ctx = ctx[1:] + [bi]
         return "".join(out)
 
 
-seed_ctx = [vmap.get(c, space_id) for c in "[   0.00"]
-NOISE_CHOICE = 8
+NOISE_CHOICE = 6
+MARGIN_CHOICE = 240   # 0.94 logit units in Q8 (Min-P ~= exp(-0.94) ~= 0.39)
 
-# overflow guard: logits live in int16 in asm (Q8)
-_probe = BootSim(0)
-_lmax = 0
+# Overflow guard: preacts*64 must fit int32 and logits must fit int16 (Q8)
+_probe = BootSim(NOISE_CHOICE, MARGIN_CHOICE, seed=0x1234)
+_pmax, _lmax = 0, 0
 _ctx = list(seed_ctx)
-for _ in range(300):
-    _l = _probe.logits_for(_ctx)
+for _ in range(800):
+    _p, _, _l = _probe.preacts_and_logits(_ctx)
+    _pmax = max(_pmax, int(np.abs(_p).max()))
     _lmax = max(_lmax, int(np.abs(_l).max()))
-    _ctx = _ctx[1:] + [int(_l.argmax())]
-print(f"max |logit| on greedy walk: {_lmax} (int16 limit 32767)")
-assert _lmax < 30000, _lmax
+    _ctx = _ctx[1:] + [_probe.step_token(_ctx)]
+print(f"max |p| on sample walk: {_pmax} (int32/64 limit 33554431)")
+print(f"max |logit| on sample walk: {_lmax} (int16 limit 32767)")
+assert _pmax < 10_000_000, _pmax
+assert _lmax < 30_000, _lmax
 
-print("\n--- INTEGER (asm-identical) samples, noise sweep ---")
-for ns in [8, 24, 48, 96]:
-    s = BootSim(ns)
-    txt = s.gen(400, seed_ctx)
-    print(f"\n[NS={ns}]")
-    print(txt[:1200])
+print("\n--- INTEGER (asm-identical) Min-P samples across seeds ---")
+for sd in [0x1234, 0xBEEF, 0xCAFE]:
+    s = BootSim(NOISE_CHOICE, MARGIN_CHOICE, seed=sd)
+    txt = s.gen(900, seed_ctx)
+    print(f"\n[seed={sd:#06x}, MARGIN={MARGIN_CHOICE}, NOISE={NOISE_CHOICE}]")
+    print(txt)
 
 # ---------------- emit artifacts ----------------
 blob = bytearray()
-blob += bytes(ord(c) if c != "\n" else 10 for c in vocab)   # 64
-blob += emb_q.tobytes()                                     # 384
+blob += bytes(ord(c) if c != "\n" else 10 for c in vocab)   # V
+blob += emb_q.tobytes()                                     # V*E
 blob += W1_q.tobytes()                                      # H*C*E
 blob += W2_q.tobytes()                                      # V*H
 blob += b1_q.tobytes()                                      # H*2
 blob += b2_q.tobytes()                                      # V*2
-expected = 64 + V * E + H * C * E + V * H + 2 * H + 2 * V
+expected = V + V * E + H * C * E + V * H + 2 * H + 2 * V
 assert len(blob) == expected, (len(blob), expected)
 
-# strings live on disk too, the boot sector is code only
+# Seed context and strings live on disk too; the boot sector is pure code.
+SEED_ADDR = 0x8000 + len(blob)
+blob += bytes(seed_ctx)
+
 HDR_ADDR = 0x8000 + len(blob)
-blob += (b"bootgpt: a neural network dreaming a linux boot log"
-         b"\r\nno os involved - press any key to reboot\r\n\x00")
+blob += (b"bootgpt-cpp: bare-metal neural network dreaming C++20"
+         b"\r\nno os involved - press any key to reboot\r\n\r\n\x00")
 BYE_ADDR = 0x8000 + len(blob)
-blob += b"\r\ndream interrupted - rebooting reality\x00"
+blob += b"\r\n// build interrupted - rebooting...\r\n\x00"
+assert 0x8000 + len(blob) < 0x10000, "DS=0 16-bit address overflow"
 
 SECTORS = (len(blob) + 511) // 512
+assert SECTORS <= 60, f"weights ({SECTORS} sectors) exceed single CHS track read"
 blob += b"\x00" * (SECTORS * 512 - len(blob))
 open("weights.bin", "wb").write(blob)
 
 with open("params.inc", "w") as f:
-    w1off = 64 + V * E
+    w1off = V + V * E
     w2off = w1off + H * C * E
     b1off = w2off + V * H
     b2off = b1off + 2 * H
     f.write(f"; auto-generated by train.py\n"
-            f"VOCAB   equ {V}\n"
-            f"CTX     equ {C}\n"
-            f"EMBDIM  equ {E}\n"
-            f"HID     equ {H}\n"
-            f"W1_OFF  equ {w1off}\n"
-            f"W2_OFF  equ {w2off}\n"
-            f"B1_OFF  equ {b1off}\n"
-            f"B2_OFF  equ {b2off}\n"
-            f"A1SHIFT equ {A1SHIFT}\n"
-            f"A2SHIFT equ {A2SHIFT}\n"
-            f"NOISE   equ {NOISE_CHOICE}\n"
-            f"SECTORS equ {SECTORS}\n"
-            f"HDRADDR equ {HDR_ADDR:#x}\n"
-            f"BYEADDR equ {BYE_ADDR:#x}\n")
-    f.write("%define SEEDBYTES db " + ",".join(str(i) for i in seed_ctx) + "\n")
-json.dump({"A1SHIFT": A1SHIFT, "A2SHIFT": A2SHIFT,
-           "scales": [ee, ew1, ew2]}, open("params.json", "w"))
+            f"VOCAB    equ {V}\n"
+            f"CTX      equ {C}\n"
+            f"EMBDIM   equ {E}\n"
+            f"HID      equ {H}\n"
+            f"W1_OFF   equ {w1off}\n"
+            f"W2_OFF   equ {w2off}\n"
+            f"B1_OFF   equ {b1off}\n"
+            f"B2_OFF   equ {b2off}\n"
+            f"A1SHIFT  equ {A1SHIFT}\n"
+            f"A2SHIFT  equ {A2SHIFT}\n"
+            f"MARGIN   equ {MARGIN_CHOICE}\n"
+            f"NOISE    equ {NOISE_CHOICE}\n"
+            f"SECTORS  equ {SECTORS}\n"
+            f"SEEDADDR equ {SEED_ADDR:#x}\n"
+            f"HDRADDR  equ {HDR_ADDR:#x}\n"
+            f"BYEADDR  equ {BYE_ADDR:#x}\n")
+
+json.dump({
+    "V": V, "C": C, "E": E, "H": H,
+    "A1SHIFT": A1SHIFT, "A2SHIFT": A2SHIFT,
+    "MARGIN": MARGIN_CHOICE, "NOISE": NOISE_CHOICE,
+    "SECTORS": SECTORS,
+    "scales": [ee, ew1, ew2],
+    "seed_ctx": seed_ctx,
+}, open("params.json", "w"), indent=2)
 print(f"\nweights.bin: {len(blob)} bytes ({SECTORS} sectors), params.inc written")

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Automated demo recording for bootgpt (screendump pipeline).
+"""Automated demo recording for bootgpt-cpp (screendump pipeline).
 
 Drives headless QEMU through the monitor socket: captures VGA
 screendumps at 15 fps, presses a key at KEY_AT so the machine reboots
 in frame, then assembles mp4 (2x crisp) + looping gif.
 
-Timeline (~34s): boot -> neural dream -> keypress -> reboot -> dream again.
+Timeline (~20s): boot -> C++20 neural dream -> keypress -> reboot -> dream again.
 """
 import os
 import shutil
