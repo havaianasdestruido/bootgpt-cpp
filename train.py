@@ -5,13 +5,17 @@ quantize to int8/int16, and simulate the EXACT integer arithmetic in boot.asm.
 Everything the boot sector does is defined here first; boot.asm must match.
 """
 import json
+from pathlib import Path
+
 import numpy as np
+
+MODEL_DIR = Path("model")
+MODEL_DIR.mkdir(exist_ok=True)
 
 rng = np.random.default_rng(7)
 
-# ---------------- architecture (frozen) ----------------
-V = 88      # vocab (full C++20 corpus charset: \n, space, alnum, operators)
-C = 32      # context chars (covers full C++ line + indentation + signature)
+# ---------------- architecture (fixed dimensions, corpus-derived vocab) ----------------
+C = 32      # context characters
 E = 6       # embedding dim
 H = 100     # hidden units
 Q = 12      # activation fixed-point (Q12)
@@ -27,8 +31,20 @@ freq = {}
 for ch in text:
     freq[ch] = freq.get(ch, 0) + 1
 top = sorted(freq.items(), key=lambda kv: (-kv[1], kv[0]))
-assert len(top) == V, (len(top), V)
 vocab = [ch for ch, _ in top]
+V = len(vocab)
+# IDs are bytes and the assembly reserves 512 bytes for int16 logits.
+assert 0 < V <= 256, f"vocabulary of {V} characters exceeds boot buffers"
+assert all(ch == "\n" or " " <= ch <= "~" for ch in vocab), \
+    "corpus contains non-printable or non-ASCII characters"
+# Check the disk/segment budget before the expensive training loop. The blob
+# ends with a context and two NUL-terminated BIOS strings (see emission).
+_header = (b"bootgpt-cpp: bare-metal neural network dreaming C++20"
+           b"\r\nno os involved - press any key to reboot\r\n\r\n\x00")
+_bye = b"\r\n// build interrupted - rebooting...\r\n\x00"
+_blob_size = V + V * E + H * C * E + V * H + 2 * H + 2 * V + C + len(_header) + len(_bye)
+assert _blob_size <= 60 * 512 and 0x8000 + _blob_size < 0x10000, \
+    f"vocabulary of {V} characters exceeds the boot weight budget"
 assert "\n" in vocab and " " in vocab
 vmap = {ch: i for i, ch in enumerate(vocab)}
 space_id = vmap[" "]
@@ -131,7 +147,7 @@ for step in range(1, STEPS + 1):
         print(f"step {step:6d}  loss {np.mean(losses[-5000:]):.4f}  lr {lr:.5f}")
 
 emb, W1, b1, W2, b2 = params
-np.savez("model.npz", emb=emb, W1=W1, b1=b1, W2=W2, b2=b2,
+np.savez(MODEL_DIR / "model.npz", emb=emb, W1=W1, b1=b1, W2=W2, b2=b2,
          vocab=np.array("".join(vocab)))
 
 
@@ -367,18 +383,17 @@ SEED_ADDR = 0x8000 + len(blob)
 blob += bytes(seed_ctx)
 
 HDR_ADDR = 0x8000 + len(blob)
-blob += (b"bootgpt-cpp: bare-metal neural network dreaming C++20"
-         b"\r\nno os involved - press any key to reboot\r\n\r\n\x00")
+blob += _header
 BYE_ADDR = 0x8000 + len(blob)
-blob += b"\r\n// build interrupted - rebooting...\r\n\x00"
+blob += _bye
 assert 0x8000 + len(blob) < 0x10000, "DS=0 16-bit address overflow"
 
 SECTORS = (len(blob) + 511) // 512
 assert SECTORS <= 60, f"weights ({SECTORS} sectors) exceed single CHS track read"
 blob += b"\x00" * (SECTORS * 512 - len(blob))
-open("weights.bin", "wb").write(blob)
+(MODEL_DIR / "weights.bin").write_bytes(blob)
 
-with open("params.inc", "w") as f:
+with (MODEL_DIR / "params.inc").open("w") as f:
     w1off = V + V * E
     w2off = w1off + H * C * E
     b1off = w2off + V * H
@@ -401,12 +416,14 @@ with open("params.inc", "w") as f:
             f"HDRADDR  equ {HDR_ADDR:#x}\n"
             f"BYEADDR  equ {BYE_ADDR:#x}\n")
 
-json.dump({
-    "V": V, "C": C, "E": E, "H": H,
-    "A1SHIFT": A1SHIFT, "A2SHIFT": A2SHIFT,
-    "MARGIN": MARGIN_CHOICE, "NOISE": NOISE_CHOICE,
-    "SECTORS": SECTORS,
-    "scales": [ee, ew1, ew2],
-    "seed_ctx": seed_ctx,
-}, open("params.json", "w"), indent=2)
-print(f"\nweights.bin: {len(blob)} bytes ({SECTORS} sectors), params.inc written")
+with (MODEL_DIR / "params.json").open("w") as f:
+    json.dump({
+        "V": V, "C": C, "E": E, "H": H,
+        "A1SHIFT": A1SHIFT, "A2SHIFT": A2SHIFT,
+        "MARGIN": MARGIN_CHOICE, "NOISE": NOISE_CHOICE,
+        "SECTORS": SECTORS,
+        "scales": [ee, ew1, ew2],
+        "seed_ctx": seed_ctx,
+    }, f, indent=2)
+print(f"\nmodel/weights.bin: {len(blob)} bytes ({SECTORS} sectors), "
+      "model/params.inc written")

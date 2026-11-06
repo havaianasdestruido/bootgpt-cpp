@@ -16,7 +16,7 @@
 [org 0x7C00]
 [cpu 386]
 [bits 16]
-%include "params.inc"
+%include "model/params.inc"
 
 EMB_OFF     equ VOCAB
 

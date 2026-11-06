@@ -1,0 +1,124 @@
+corpus chars: 899969 vocab size: 95 vocab:  te\nnirsaoluc_d();pfm=g:Shb{},vxy>z<0EC.kLTNIOA&+wR"*1-PFM23[]U#B'6DV/8!H4|GKj\7W59%qQX~YZ?^J@$
+step   5000  loss 1.8337  lr 0.00725
+step  10000  loss 1.5835  lr 0.00525
+step  15000  loss 1.5191  lr 0.00381
+step  20000  loss 1.4816  lr 0.00276
+step  25000  loss 1.4558  lr 0.00200
+step  30000  loss 1.4393  lr 0.00145
+step  35000  loss 1.4215  lr 0.00105
+step  40000  loss 1.4057  lr 0.00076
+step  45000  loss 1.4019  lr 0.00055
+step  50000  loss 1.3958  lr 0.00040
+
+--- FLOAT baseline sample ---
+
+    vo(:akemt_pooncent() ?< gintaled.betagd(fine,
+                          scunsignefStr<? kUUSUWFT(") {
+  retuint8rmerize_t(ling_valullyrengterth_ftr(aEunt) {
+      return != Foxtack >= 0) {
+
+           return " ();
+                    frome = 1;
+        }
+        r <= hagda[* --hpat;
+    }
+
+    void pub->nods;
+    }
+
+    size_t size_t pytesizeOTsize();
+        if (size_t pot + 13, frib);
+      if (!scallays(0.Line windedededs())
+        return Return w;
+                                   uint32_t a].& ~Adaview size_tains7g"
+
+
+QAT fine-tune (5000 steps): loss 1.4320 -> 1.4163
+scales: emb 2^4  w1 2^4  w2 2^5  a1shift -4  a2shift 3  sat(emb,W1) 17 sat(W2) 1
+max |p| on sample walk: 238839 (int32/64 limit 33554431)
+max |logit| on sample walk: 7566 (int16 limit 32767)
+
+--- INTEGER (asm-identical) Min-P samples across seeds ---
+
+[seed=0x1234, MARGIN=240, NOISE=6]
+
+strear lockey poth_bilic = 0;
+            witxtat(size_++ '9xt < 0, size_t i = 0; i++stis;
+          forser() = (purter = slotit = 0) {
+
+
+[seed=0xbeef, MARGIN=240, NOISE=6]
+
+conste
+ emeliny  outo bumberalesp j & catat {
+        if (ndlock() const {
+            return ) {
+            return std::folse_torter);
+    }
+
+    size_t wr::sullacesign();
+        higedreads.arpen aspati = true;
+
+    if (size_t int pos_;
+}
+
+strine size_t lacked (from = nsize_t noe_
+class Bufper {
+        out_p_torg_[int32_t* malse;
+        size_t size_;
+    size_t out_pyind(0) {}
+
+    bool lulling != 0) {
+
+
+[seed=0xcafe, MARGIN=240, NOISE=6]
+#include <array>
+#include <atomic>
+#include <concepts>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <optional>
+#include <span>
+#include <string_view>
+#include <uther_{
+    if (stron sen ader> int32_t - stack()) {
+        if (slots = 0;
+            fode_* *= ' '/' 632 ||                ++stx::fjmcherald <bet + 1]);
+    }
+
+    bool ( size_py(soze_+ b) {
+        size_t 1;
+    }
+
+    constextorg_t, bos_count;
+    size_t aches_cengety = ned atest Substring& b);
+}
+
+}
+
+void ate::tatar<u8mine_tinst uint8_t = uint8_t* hal_;
+};
+
+// Fineate];
+}
+
+// Sac istenar auto char char ande_const uint8_t* hest_char* std::string_view ints() {
+        return tos_(edemt);
+    }
+  }
+  return 1 ket;
+};
+
+// Liol = uint32_t(ke(> noe_t {
+        if (size_t size_ = 0; ++ 1;
+    }
+
+    bool (0287] = 0; i    uint8_t* d, 0, return;
+    }
+    if (if (su3+ " toy = 0; ++ 10);
+    }
+
+      i + start = 0;
+
+weights.bin: 30208 bytes (59 sectors), params.inc written

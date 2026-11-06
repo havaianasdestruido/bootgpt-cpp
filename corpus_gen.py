@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
-"""Generate a realistic, properly indented C++20 systems corpus for bootgpt-cpp.
+"""Build a mixed corpus of synthetic C++ and real, comment-stripped source.
 
-Each translation unit is valid, warning-free C++20 (4-space indentation, K&R
-braces, <=64 cols per line so nothing wraps awkwardly on 80x25 VGA).
-Declarations follow a canonical topological order within each unit and each
-type uses distinct member names and idioms so a 32-char context window tracks
-class scope and brace depth cleanly without cross-type splices or loops.
+The synthetic translation units are self-contained; upstream files preserve
+their own styles and normally require their original project to compile.
 """
+import hashlib
+import json
 import random
+from pathlib import Path
 
 random.seed(1337)
 
-ALLOWED = (
-    " \n"
-    "abcdefghijklmnopqrstuvwxyz"
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "0123456789"
-    "{}()[]<>:;,.=+-*/&_#\"'!|~%?^\\"
-)
-ALLOWED_SET = set(ALLOWED)
+NUM_UNITS = 100
+ROOT = Path(__file__).resolve().parent
+SOURCE_ROOT = ROOT / "source_code"
+SOURCE_MANIFEST = ROOT / "upstream_sources.json"
+
+# BIOS teletype output supports printable ASCII and newline. Tabs and form
+# feeds in upstream code were normalized when preparing the vendored files.
+ALLOWED_SET = set(chr(i) for i in range(32, 127)) | {"\n"}
 
 NAMESPACES = ["core", "sys", "mem", "io", "net", "util"]
 MAGICS_32 = [
@@ -38,7 +38,9 @@ def ordered_subset(items, k):
 
 
 def gen_includes(use_vec=True, is_header=False):
-    hdrs = ["<atomic>", "<cstddef>", "<cstdint>", "<cstring>"]
+    hdrs = ["<array>", "<atomic>", "<concepts>", "<cstddef>",
+            "<cstdint>", "<cstring>", "<optional>", "<span>",
+            "<string_view>"]
     if use_vec:
         hdrs.append("<vector>")
     if random.random() < 0.45:
@@ -652,6 +654,136 @@ def gen_class_spinlock():
     return "\n".join(lines)
 
 
+def gen_class_fixed_stack():
+    return "\n".join([
+        "// Fixed-capacity stack with checked access",
+        "template <typename Value, size_t Capacity>",
+        "class FixedStack {",
+        "public:",
+        "    bool push(const Value& value) {",
+        "        if (size_ == Capacity) {",
+        "            return false;",
+        "        }",
+        "        values_[size_++] = value;",
+        "        return true;",
+        "    }",
+        "",
+        "    std::optional<Value> pop() {",
+        "        if (size_ == 0) {",
+        "            return std::nullopt;",
+        "        }",
+        "        return values_[--size_];",
+        "    }",
+        "",
+        "    size_t size() const noexcept { return size_; }",
+        "",
+        "private:",
+        "    std::array<Value, Capacity> values_{};",
+        "    size_t size_ = 0;",
+        "};",
+    ])
+
+
+def gen_class_counter():
+    return "\n".join([
+        "// Atomic counter with relaxed statistics updates",
+        "class Counter {",
+        "public:",
+        "    void increment() noexcept {",
+        "        value_.fetch_add(1, std::memory_order_relaxed);",
+        "    }",
+        "",
+        "    uint64_t load() const noexcept {",
+        "        return value_.load(std::memory_order_relaxed);",
+        "    }",
+        "",
+        "    void reset() noexcept {",
+        "        value_.store(0, std::memory_order_relaxed);",
+        "    }",
+        "",
+        "private:",
+        "    std::atomic<uint64_t> value_{0};",
+        "};",
+    ])
+
+
+def gen_class_byte_view():
+    return "\n".join([
+        "// Read-only view over a contiguous byte range",
+        "class ByteView {",
+        "public:",
+        "    explicit ByteView(std::span<const uint8_t> bytes)",
+        "        : bytes_(bytes) {}",
+        "",
+        "    std::optional<uint8_t> get(size_t index) const {",
+        "        if (index >= bytes_.size()) {",
+        "            return std::nullopt;",
+        "        }",
+        "        return bytes_[index];",
+        "    }",
+        "",
+        "    size_t size() const noexcept { return bytes_.size(); }",
+        "",
+        "private:",
+        "    std::span<const uint8_t> bytes_;",
+        "};",
+    ])
+
+
+def gen_free_fn_power_of_two():
+    return "\n".join([
+        "// Test an unsigned value without overflowing",
+        "template <std::unsigned_integral Number>",
+        "constexpr bool is_power_of_two(Number value) noexcept {",
+        "    return value != 0 && (value & (value - 1)) == 0;",
+        "}",
+    ])
+
+
+def gen_free_fn_find_byte():
+    return "\n".join([
+        "// Find a byte in a bounded view",
+        "inline std::optional<size_t> find_byte(",
+        "    std::span<const uint8_t> bytes, uint8_t needle) {",
+        "    for (size_t i = 0; i < bytes.size(); ++i) {",
+        "        if (bytes[i] == needle) {",
+        "            return i;",
+        "        }",
+        "    }",
+        "    return std::nullopt;",
+        "}",
+    ])
+
+
+def gen_free_fn_trim():
+    return "\n".join([
+        "// Trim ASCII spaces without allocating",
+        "inline std::string_view trim_spaces(std::string_view text) {",
+        "    while (!text.empty() && text.front() == ' ') {",
+        "        text.remove_prefix(1);",
+        "    }",
+        "    while (!text.empty() && text.back() == ' ') {",
+        "        text.remove_suffix(1);",
+        "    }",
+        "    return text;",
+        "}",
+    ])
+
+
+def gen_free_fn_saturating_add():
+    return "\n".join([
+        "// Saturating addition for unsigned integers",
+        "template <std::unsigned_integral Number>",
+        "constexpr Number saturating_add(Number a, Number b) {",
+        "    Number limit = Number(~Number(0));",
+        "    if (b > limit - a) {",
+        "        return limit;",
+        "    }",
+        "    return Number(a + b);",
+        "}",
+    ])
+
+
 def gen_free_fn_hash():
     if random.random() < 0.5:
         lines = [
@@ -821,6 +953,9 @@ def gen_translation_unit():
         ("slab", gen_class_slab_pool),
         ("list", gen_class_node_list),
         ("spin", gen_class_spinlock),
+        ("stack", gen_class_fixed_stack),
+        ("counter", gen_class_counter),
+        ("view", gen_class_byte_view),
     ]
 
     picked = ordered_subset(class_builders, random.randint(2, 4))
@@ -855,6 +990,10 @@ def gen_translation_unit():
         gen_free_fn_isort,
         gen_free_fn_clamp,
         gen_free_fn_checksum,
+        gen_free_fn_power_of_two,
+        gen_free_fn_find_byte,
+        gen_free_fn_trim,
+        gen_free_fn_saturating_add,
     ]
     for fn in ordered_subset(free_fns, random.randint(1, 3)):
         sections.append(fn())
@@ -867,9 +1006,27 @@ def gen_translation_unit():
     return "\n\n".join(sections) + "\n"
 
 
+def generate_corpus():
+    units = [gen_translation_unit() for _ in range(NUM_UNITS)]
+    # Read only the pinned files, exactly once, not the attribution notices.
+    entries = json.loads(SOURCE_MANIFEST.read_text(encoding="utf-8"))
+    for entry in entries:
+        path = ROOT / entry["snippet"]
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"Missing {path}. Run python3 tools/fetch_sources.py first."
+            )
+        data = path.read_bytes()
+        if hashlib.sha256(data).hexdigest() != entry["snippet_sha256"]:
+            raise ValueError(f"Source hash mismatch: {path}. "
+                             "Run python3 tools/fetch_sources.py to repair it.")
+        units.append(data.decode("utf-8"))
+    random.shuffle(units)
+    return "\n".join(units)
+
+
 def main():
-    units = [gen_translation_unit() for _ in range(950)]
-    text = "\n".join(units)
+    text = generate_corpus()
     bad = set(text) - ALLOWED_SET
     assert not bad, f"Unexpected chars: {bad}"
     used = sorted(set(text))
