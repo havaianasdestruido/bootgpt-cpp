@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import re
 import sys
+import random
 import subprocess
 import shutil
 
@@ -16,7 +17,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from sampling import sample
+from sampling import sample, weights_for
 
 
 class Model:
@@ -103,6 +104,8 @@ def main():
     parser.add_argument('--trace', action='store_true', help='emit per-token JSON')
     parser.add_argument('--legacy', action='store_true', help='use original Min-P sampler')
     parser.add_argument('--corpus-file', type=Path, help='measure initial non-whitespace 6-gram corpus matches')
+    parser.add_argument('--corpus-stats', action='store_true', help='compare softmax weights with 2000 corpus targets')
+    parser.add_argument('--seed-sweep', action='store_true', help='evaluate boot seed with odd RNG seeds 1 to 39')
     parser.add_argument('--syntax-check', action='store_true', help='compile function-prompt completions with g++')
     args = parser.parse_args()
     model = Model()
@@ -119,6 +122,29 @@ def main():
     corpus = args.corpus_file.read_text() if args.corpus_file else None
     if args.syntax_check and not shutil.which('g++'):
         parser.error('--syntax-check requires g++')
+    if args.corpus_stats:
+        if corpus is None:
+            parser.error('--corpus-stats requires --corpus-file')
+        generator = random.Random(123)
+        distances, legacy_excluded, soft_zero = [], 0, 0
+        for _ in range(2000):
+            position = generator.randrange(model.p['C'], len(corpus))
+            ctx = model.context(corpus[position - model.p['C']:position])
+            target = model.vocab.index(corpus[position])
+            logits = model.forward(ctx)[2]
+            weights = np.array(weights_for(logits), dtype=np.float64)
+            exact = np.exp((logits - logits.max()) / 256.0)
+            distances.append(float(np.abs(weights / weights.sum() - exact / exact.sum()).sum() / 2))
+            legacy_excluded += int(logits[target] < logits.max() - 240)
+            soft_zero += int(weights[target] == 0)
+        print(json.dumps({'case': 'corpus-sampler-stats', 'count': len(distances),
+                          'softmax_tv_mean': float(np.mean(distances)),
+                          'softmax_tv_max': max(distances),
+                          'legacy_excluded_targets': legacy_excluded,
+                          'softmax_zero_targets': soft_zero}))
+    if args.seed_sweep:
+        cases = [(f'boot-seed-{seed:04x}', model.p['seed_ctx'], seed, None)
+                 for seed in range(1, 40, 2)]
     for name, context, seed, prompt in cases:
         text = model.generate(context, seed, args.tokens, args.trace, args.legacy)
         record = {'case': name, 'seed': seed, 'decoder': 'legacy' if args.legacy else 'epsilon-soft',

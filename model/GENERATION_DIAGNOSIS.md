@@ -44,6 +44,9 @@ With NumPy installed and the corpus sources downloaded (see the main README):
 python3 corpus_gen.py
 python3 tools/evaluate_generation.py --legacy --corpus-file corpus.txt --syntax-check > before.jsonl
 python3 tools/evaluate_generation.py          --corpus-file corpus.txt --syntax-check > after.jsonl
+python3 tools/evaluate_generation.py --corpus-file corpus.txt --corpus-stats > corpus-stats.jsonl
+python3 tools/evaluate_generation.py --legacy --seed-sweep > sweep-before.jsonl
+python3 tools/evaluate_generation.py          --seed-sweep > sweep-after.jsonl
 ```
 
 Use `--trace` for JSON lines with each context's IDs, selected token ID,

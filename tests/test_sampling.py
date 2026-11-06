@@ -93,6 +93,7 @@ class GenerationTests(unittest.TestCase):
             else:
                 next_state[state] = advance[branch]
         marks = [0] * 65536
+        distance = [0] * 65536
         for start in range(65536):
             if marks[start]:
                 continue
@@ -104,8 +105,12 @@ class GenerationTests(unittest.TestCase):
                 state = next_state[state]
             self.assertTrue(state == -1 or marks[state] == 2,
                             'an all-space cycle survives for some RNG state')
-            for state in path:
+            remaining = 0 if state == -1 else distance[state]
+            for state in reversed(path):
+                remaining += 1
+                distance[state] = remaining
                 marks[state] = 2
+        self.assertLessEqual(max(distance), 225)
 
     def test_fixed_prompt_suite_improves_repetition(self):
         m = self.model
